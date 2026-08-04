@@ -101,3 +101,5 @@ jobs:
           git add -A
           git commit -m "chore: importar projeto Controle de NFs"
           git push
+
+# Reexecução solicitada em 2026-08-04 após o envio do ZIP correto.
