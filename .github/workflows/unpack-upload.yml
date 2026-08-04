@@ -1,0 +1,103 @@
+name: Importar projeto do ZIP
+
+on:
+  push:
+
+permissions:
+  contents: write
+
+jobs:
+  unpack:
+    if: github.actor != 'github-actions[bot]'
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Baixar repositório
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Validar e descompactar projeto
+        shell: bash
+        run: |
+          python3 - <<'PY'
+          from pathlib import Path
+          import json
+          import shutil
+          import stat
+          import tempfile
+          import zipfile
+
+          root = Path.cwd()
+          archives = sorted(root.glob('*.zip'))
+          if len(archives) != 1:
+              raise SystemExit(f'Esperado exatamente um ZIP na raiz; encontrados: {[p.name for p in archives]}')
+
+          archive = archives[0]
+          temporary = Path(tempfile.mkdtemp(prefix='controle-nfs-import-'))
+          extracted = temporary / 'extracted'
+          extracted.mkdir(parents=True)
+
+          with zipfile.ZipFile(archive) as package:
+              for item in package.infolist():
+                  destination = (extracted / item.filename).resolve()
+                  try:
+                      destination.relative_to(extracted.resolve())
+                  except ValueError:
+                      raise SystemExit(f'Caminho inválido no ZIP: {item.filename}')
+
+                  unix_mode = item.external_attr >> 16
+                  if stat.S_ISLNK(unix_mode):
+                      raise SystemExit(f'Link simbólico não permitido no ZIP: {item.filename}')
+
+              package.extractall(extracted)
+
+          source = extracted
+          children = [p for p in extracted.iterdir() if p.name not in {'__MACOSX'}]
+          if not (source / 'package.json').is_file() and len(children) == 1 and children[0].is_dir():
+              source = children[0]
+
+          package_json = source / 'package.json'
+          if not package_json.is_file():
+              raise SystemExit('O ZIP não possui package.json na raiz do projeto.')
+
+          package_data = json.loads(package_json.read_text(encoding='utf-8'))
+          admin_markers = [
+              source / 'app/dashboard/notas/page.tsx',
+              source / 'app/dashboard/estoque/page.tsx',
+              source / 'app/dashboard/ferramentas/page.tsx',
+              source / 'app/dashboard/inventario/page.tsx',
+          ]
+          marker_count = sum(marker.exists() for marker in admin_markers)
+          if marker_count < 2:
+              raise SystemExit(
+                  'O ZIP não parece ser o Controle de NFs: módulos administrativos esperados não foram encontrados.'
+              )
+
+          for child in list(root.iterdir()):
+              if child.name == '.git':
+                  continue
+              if child.is_dir():
+                  shutil.rmtree(child)
+              else:
+                  child.unlink()
+
+          for child in source.iterdir():
+              target = root / child.name
+              if child.is_dir():
+                  shutil.copytree(child, target)
+              else:
+                  shutil.copy2(child, target)
+
+          print(f"Projeto validado: {package_data.get('name', '(sem nome)')}")
+          print(f'Módulos administrativos encontrados: {marker_count}')
+          PY
+
+      - name: Criar commit com o projeto extraído
+        shell: bash
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add -A
+          git commit -m "chore: importar projeto Controle de NFs"
+          git push
