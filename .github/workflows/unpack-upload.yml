@@ -2,6 +2,7 @@ name: Importar projeto do ZIP
 
 on:
   push:
+  workflow_dispatch:
 
 permissions:
   contents: write
@@ -63,13 +64,15 @@ jobs:
 
           package_data = json.loads(package_json.read_text(encoding='utf-8'))
           admin_markers = [
-              source / 'app/dashboard/notas/page.tsx',
-              source / 'app/dashboard/estoque/page.tsx',
-              source / 'app/dashboard/ferramentas/page.tsx',
-              source / 'app/dashboard/inventario/page.tsx',
+              source / 'app/dashboard/nfs/page.tsx',
+              source / 'app/dashboard/stock/page.tsx',
+              source / 'app/dashboard/inventory/page.tsx',
+              source / 'app/dashboard/cautelia/page.tsx',
+              source / 'app/dashboard/audit/page.tsx',
+              source / 'app/dashboard/users/page.tsx',
           ]
           marker_count = sum(marker.exists() for marker in admin_markers)
-          if marker_count < 2:
+          if marker_count < 4:
               raise SystemExit(
                   'O ZIP não parece ser o Controle de NFs: módulos administrativos esperados não foram encontrados.'
               )
@@ -101,5 +104,3 @@ jobs:
           git add -A
           git commit -m "chore: importar projeto Controle de NFs"
           git push
-
-# Reexecução solicitada em 2026-08-04 após o envio do ZIP correto.
