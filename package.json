@@ -3,9 +3,9 @@
   "version": "0.1.0",
   "private": true,
   "scripts": {
-    "predev": "python3 scripts/apply-bulk-nf-patch.py && python3 scripts/apply-bulk-nf-fixes.py",
+    "predev": "python3 scripts/apply-bulk-nf-patch.py && python3 scripts/apply-bulk-nf-fixes.py && python3 scripts/apply-bulk-nf-save-all.py",
     "dev": "next dev",
-    "prebuild": "python3 scripts/apply-bulk-nf-patch.py && python3 scripts/apply-bulk-nf-fixes.py",
+    "prebuild": "python3 scripts/apply-bulk-nf-patch.py && python3 scripts/apply-bulk-nf-fixes.py && python3 scripts/apply-bulk-nf-save-all.py",
     "build": "next build",
     "start": "next start",
     "lint": "eslint ."
