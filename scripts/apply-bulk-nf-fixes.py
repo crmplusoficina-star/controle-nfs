@@ -83,5 +83,17 @@ replace_once(
     'notification overflow'
 )
 
+replace_once(
+    "message: `${results.length} notas fiscais foram preenchidas. Revise e salve cada NF individualmente.`,",
+    "message: `${results.length} notas fiscais foram preenchidas. Revise os dados e use o botão Salvar todas as NFs.`,",
+    'batch read success copy'
+)
+
+replace_once(
+    "Confirme para criar o lote de NF Compra. Cada anexo terá seus próprios dados e deverá ser salvo individualmente.",
+    "Confirme para criar o lote de NF Compra. Cada anexo terá seus próprios dados e todas as NFs prontas serão salvas juntas.",
+    'batch confirmation copy'
+)
+
 path.write_text(text, encoding='utf-8')
 print('Bulk NF fixes applied successfully.')
