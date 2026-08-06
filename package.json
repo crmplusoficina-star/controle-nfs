@@ -3,9 +3,9 @@
   "version": "0.1.0",
   "private": true,
   "scripts": {
-    "predev": "python3 scripts/apply-bulk-nf-patch.py && python3 scripts/apply-bulk-nf-fixes.py && python3 scripts/apply-bulk-nf-save-all.py && python3 scripts/apply-bulk-nf-preview-scroll.py",
+    "predev": "python3 scripts/apply-bulk-nf-patch.py && python3 scripts/apply-bulk-nf-fixes.py && python3 scripts/apply-bulk-nf-save-all.py && python3 scripts/apply-bulk-nf-preview-scroll.py && python3 scripts/apply-ferramentaria-avatar-sync.py",
     "dev": "next dev",
-    "prebuild": "python3 scripts/apply-bulk-nf-patch.py && python3 scripts/apply-bulk-nf-fixes.py && python3 scripts/apply-bulk-nf-save-all.py && python3 scripts/apply-bulk-nf-preview-scroll.py",
+    "prebuild": "python3 scripts/apply-bulk-nf-patch.py && python3 scripts/apply-bulk-nf-fixes.py && python3 scripts/apply-bulk-nf-save-all.py && python3 scripts/apply-bulk-nf-preview-scroll.py && python3 scripts/apply-ferramentaria-avatar-sync.py",
     "build": "next build",
     "start": "next start",
     "lint": "eslint ."
