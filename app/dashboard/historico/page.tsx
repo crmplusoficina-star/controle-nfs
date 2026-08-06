@@ -9,7 +9,7 @@ import {
   History, 
   Calendar, 
   MapPin, 
-  RotateCcw, 
+  RotateCcw,
   ChevronRight,
   Package,
   ArrowRight,
@@ -23,13 +23,22 @@ import { ptBR } from 'date-fns/locale';
 
 const TYPE_TRANSLATIONS: Record<string, { label: string; color: string }> = {
   'caution': { label: 'Cautela', color: 'bg-amber-100 text-amber-700 border-amber-200' },
+  'cautela': { label: 'Cautela', color: 'bg-amber-100 text-amber-700 border-amber-200' },
   'loan': { label: 'Empréstimo', color: 'bg-purple-100 text-purple-700 border-purple-200' },
+  'borrow': { label: 'Empréstimo', color: 'bg-purple-100 text-purple-700 border-purple-200' },
   'return': { label: 'Devolução', color: 'bg-emerald-100 text-emerald-700 border-emerald-200' },
   'adjustment_gain': { label: 'Ajuste (+)', color: 'bg-slate-100 text-slate-700 border-slate-200' },
   'adjustment_loss': { label: 'Ajuste (-)', color: 'bg-slate-100 text-slate-700 border-slate-200' },
   'adjustment': { label: 'Ajuste', color: 'bg-slate-100 text-slate-700 border-slate-200' },
   'loss': { label: 'Perda', color: 'bg-rose-100 text-rose-700 border-rose-200' },
   'transfer': { label: 'Transferência', color: 'bg-indigo-100 text-indigo-700 border-indigo-200' },
+};
+
+const effectiveTransactionType = (transaction: any) => {
+  const rawType = String(transaction?.type || '').toLowerCase();
+  const observation = String(transaction?.obs || '').toLowerCase();
+  if (rawType === 'borrow') return observation.includes('cautela') ? 'caution' : 'loan';
+  return rawType;
 };
 
 export default function HistoricoPage() {
@@ -83,6 +92,10 @@ export default function HistoricoPage() {
       if (selectedType !== 'all') {
         if (selectedType === 'adjustment') {
            query = query.ilike('type', 'adjustment%');
+        } else if (selectedType === 'loan') {
+           query = query.eq('type', 'borrow').not('obs', 'ilike', '%cautela%');
+        } else if (selectedType === 'caution') {
+           query = query.eq('type', 'borrow').ilike('obs', '%cautela%');
         } else {
            query = query.eq('type', selectedType);
         }
@@ -335,7 +348,8 @@ export default function HistoricoPage() {
                 </tr>
               ) : (
                 transactions.map((t, idx) => {
-                  const type = TYPE_TRANSLATIONS[t.type] || TYPE_TRANSLATIONS[t.type.split('_')[0]] || { label: t.type, color: 'bg-slate-100 text-slate-700' };
+                  const effectiveType = effectiveTransactionType(t);
+                  const type = TYPE_TRANSLATIONS[effectiveType] || TYPE_TRANSLATIONS[effectiveType.split('_')[0]] || { label: effectiveType || 'Registro', color: 'bg-slate-100 text-slate-700' };
                   
                   return (
                     <motion.tr 

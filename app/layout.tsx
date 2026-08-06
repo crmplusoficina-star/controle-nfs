@@ -1,6 +1,7 @@
 import type {Metadata} from 'next';
 import './globals.css';
 import { AuthProvider } from '@/lib/auth-context';
+import { ExternalSignatureFixes } from '@/components/external-signature-fixes';
 import { Inter, Space_Grotesk } from 'next/font/google';
 
 const inter = Inter({
@@ -23,6 +24,7 @@ export default function RootLayout({children}: {children: React.ReactNode}) {
     <html lang="pt-BR" className={`${inter.variable} ${spaceGrotesk.variable}`} suppressHydrationWarning>
       <body suppressHydrationWarning className="antialiased bg-slate-100 text-slate-800 font-sans">
         <AuthProvider>
+          <ExternalSignatureFixes />
           {children}
         </AuthProvider>
       </body>
