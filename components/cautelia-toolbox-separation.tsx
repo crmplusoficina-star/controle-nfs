@@ -1,6 +1,6 @@
 'use client';
 
-import { useCallback, useEffect, useRef, useState } from 'react';
+import { useCallback, useEffect, useRef, useState, type ReactNode } from 'react';
 import { createPortal } from 'react-dom';
 import { BriefcaseBusiness, Handshake, Layers3, ShieldCheck } from 'lucide-react';
 import { useAuth } from '@/lib/auth-context';
@@ -134,7 +134,8 @@ export function CauteliaToolboxSeparation() {
       }
 
       card.dataset.cauteliaItemKind = kind;
-      badge.textContent = KIND_LABELS[kind];
+      const nextLabel = KIND_LABELS[kind];
+      if ((badge.textContent || '').trim() !== nextLabel) badge.textContent = nextLabel;
       badge.style.backgroundColor = kind === 'toolbox' ? '#e0f2fe' : kind === 'loan' ? '#ede9fe' : '#fef3c7';
       badge.style.color = kind === 'toolbox' ? '#075985' : kind === 'loan' ? '#5b21b6' : '#92400e';
       badge.style.paddingInline = '0.45rem';
@@ -247,7 +248,7 @@ export function CauteliaToolboxSeparation() {
 
   if (!portalNode || counts.all === 0) return null;
 
-  const options: Array<{ id: ItemFilter; label: string; count: number; icon: React.ReactNode }> = [
+  const options: Array<{ id: ItemFilter; label: string; count: number; icon: ReactNode }> = [
     { id: 'all', label: 'Todos', count: counts.all, icon: <Layers3 size={15}/> },
     { id: 'toolbox', label: 'Caixa de ferramentas', count: counts.toolbox, icon: <BriefcaseBusiness size={15}/> },
     { id: 'caution', label: 'Cautelas', count: counts.caution, icon: <ShieldCheck size={15}/> },
