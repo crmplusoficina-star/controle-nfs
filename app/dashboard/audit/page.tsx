@@ -24,6 +24,13 @@ import { motion, AnimatePresence } from 'motion/react';
 import { supabase } from '@/lib/supabase';
 import { useAuth } from '@/lib/auth-context';
 
+const effectiveActivityType = (activity: any) => {
+  const rawType = String(activity?.type || '').toLowerCase();
+  const observation = String(activity?.obs || '').toLowerCase();
+  if (rawType === 'borrow') return observation.includes('cautela') ? 'caution' : 'loan';
+  return rawType;
+};
+
 export default function AuditPage() {
   const { user: currentUser } = useAuth();
   const [activities, setActivities] = useState<any[]>([]);
@@ -137,8 +144,11 @@ export default function AuditPage() {
     if (!error) fetchActivities();
   };
 
-  const getIcon = (type: string) => {
-    switch(type) {
+  const getIcon = (activity: any) => {
+    switch(effectiveActivityType(activity)) {
+      case 'loan': return <ArrowUpRight className="text-purple-500" />;
+      case 'caution': return <ArrowUpRight className="text-amber-500" />;
+      case 'return': return <RotateCcw className="text-emerald-500" />;
       case 'cautela_check': return <History className="text-indigo-500" />;
       case 'inventory_report': return <Zap className="text-amber-500" />;
       case 'adjustment_gain': return <Plus className="text-emerald-500" />;
@@ -147,13 +157,16 @@ export default function AuditPage() {
     }
   };
 
-  const getLabel = (type: string) => {
-    switch(type) {
+  const getLabel = (activity: any) => {
+    switch(effectiveActivityType(activity)) {
+      case 'loan': return 'Empréstimo';
+      case 'caution': return 'Cautela';
+      case 'return': return 'Devolução';
       case 'cautela_check': return 'Check Cautela';
       case 'inventory_report': return 'Inventário';
       case 'adjustment_gain': return 'Ajuste Ganho';
       case 'adjustment_loss': return 'Ajuste Perda';
-      case 'cautela': return 'Check Cautela';
+      case 'cautela': return 'Cautela';
       default: return 'Registro';
     }
   };
@@ -245,16 +258,18 @@ export default function AuditPage() {
                 <tr>
                    <td colSpan={7} className="px-8 py-12 text-center text-slate-400 font-bold italic uppercase text-[10px] tracking-widest">Nenhuma movimentação registrada.</td>
                 </tr>
-              ) : filteredActivities.map(act => (
+              ) : filteredActivities.map(act => {
+                const activityType = effectiveActivityType(act);
+                return (
                 <tr key={act.id} className="hover:bg-indigo-50/30 transition-colors group text-sm border-l-4 border-transparent hover:border-indigo-400">
                    <td className="px-8 py-6">
                       <div className="flex items-center gap-3">
                          <div className={`p-2 rounded-xl bg-white shadow-sm border border-slate-100 group-hover:scale-110 transition-transform`}>
-                            {getIcon(act.type)}
+                            {getIcon(act)}
                          </div>
                          <div>
-                            <span className="font-black text-slate-900 italic uppercase tracking-tighter block leading-none">{getLabel(act.type)}</span>
-                            <span className="text-[9px] font-bold text-slate-400 uppercase tracking-widest mt-1 block">Ref: {act.type}</span>
+                            <span className="font-black text-slate-900 italic uppercase tracking-tighter block leading-none">{getLabel(act)}</span>
+                            <span className="text-[9px] font-bold text-slate-400 uppercase tracking-widest mt-1 block">Ref: {activityType}</span>
                          </div>
                       </div>
                    </td>
@@ -294,7 +309,8 @@ export default function AuditPage() {
                       )}
                    </td>
                 </tr>
-              ))}
+                );
+              })}
            </tbody>
         </table>
       </div>
