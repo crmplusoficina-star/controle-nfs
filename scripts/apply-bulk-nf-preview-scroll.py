@@ -20,9 +20,9 @@ def replace_once(old: str, new: str, label: str) -> None:
 
 
 replace_once(
-    '                <div className="w-full md:w-1/3 bg-slate-50 p-8 border-r border-slate-200 flex flex-col">',
-    '''                {/* BULK_NF_PREVIEW_SCROLL_V1 */}
-                <div className="w-full md:w-1/3 min-h-0 overflow-y-scroll overscroll-contain [scrollbar-gutter:stable] bg-slate-50 p-8 border-r border-slate-200 flex flex-col">''',
+    '<div className="w-full md:w-1/3 bg-slate-50 p-8 border-r border-slate-200 flex flex-col">',
+    '''{/* BULK_NF_PREVIEW_SCROLL_V1 */}
+              <div className="w-full md:w-1/3 min-h-0 overflow-y-scroll overscroll-contain [scrollbar-gutter:stable] bg-slate-50 p-8 border-r border-slate-200 flex flex-col">''',
     'left panel vertical scroll'
 )
 
