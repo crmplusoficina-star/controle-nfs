@@ -17,6 +17,8 @@ type OperationalNotification = {
   entity_id?: string | null;
 };
 
+const TRACKED_NOTIFICATION_TYPES = ['toolbox_status', 'caution_activity'];
+
 function formatDate(value: string) {
   const date = new Date(value);
   if (Number.isNaN(date.getTime())) return '';
@@ -31,6 +33,14 @@ function formatDate(value: string) {
 function isCritical(notification: OperationalNotification) {
   const text = `${notification.title} ${notification.message}`.toLowerCase();
   return text.includes('danific') || text.includes('não recebeu') || text.includes('nao recebeu') || text.includes('não recebi') || text.includes('nao recebi');
+}
+
+function isCautionActivity(notification: OperationalNotification) {
+  return notification.type === 'caution_activity';
+}
+
+function shouldShowBrowserAlert(notification: OperationalNotification) {
+  return isCritical(notification) || isCautionActivity(notification);
 }
 
 export function OperationalNotificationCenter() {
@@ -54,7 +64,7 @@ export function OperationalNotificationCenter() {
         .from('app_notifications')
         .select('id, type, title, message, is_read, created_at, action_screen, entity_id')
         .eq('user_registration', user.registration)
-        .eq('type', 'toolbox_status')
+        .in('type', TRACKED_NOTIFICATION_TYPES)
         .is('dismissed_at', null)
         .order('created_at', { ascending: false })
         .limit(50);
@@ -84,14 +94,23 @@ export function OperationalNotificationCenter() {
         },
         (payload) => {
           const row = payload.new as Partial<OperationalNotification>;
-          if (payload.eventType === 'INSERT' && row?.type === 'toolbox_status' && row.id) {
+          if (
+            payload.eventType === 'INSERT'
+            && row?.type
+            && TRACKED_NOTIFICATION_TYPES.includes(row.type)
+            && row.id
+          ) {
             const incoming = row as OperationalNotification;
             setToast(incoming);
             window.setTimeout(() => {
               setToast((current) => current?.id === incoming.id ? null : current);
             }, 12_000);
 
-            if (typeof Notification !== 'undefined' && Notification.permission === 'granted' && isCritical(incoming)) {
+            if (
+              typeof Notification !== 'undefined'
+              && Notification.permission === 'granted'
+              && shouldShowBrowserAlert(incoming)
+            ) {
               try {
                 new Notification(incoming.title, { body: incoming.message });
               } catch {
@@ -127,6 +146,10 @@ export function OperationalNotificationCenter() {
     () => notifications.filter((notification) => !notification.is_read && isCritical(notification)).length,
     [notifications],
   );
+  const cautionCount = useMemo(
+    () => notifications.filter((notification) => !notification.is_read && isCautionActivity(notification)).length,
+    [notifications],
+  );
 
   const markRead = async (notification: OperationalNotification) => {
     if (!notification.is_read) {
@@ -154,7 +177,7 @@ export function OperationalNotificationCenter() {
       .from('app_notifications')
       .update({ is_read: true, dismissed_at: new Date().toISOString() })
       .eq('user_registration', user.registration)
-      .eq('type', 'toolbox_status')
+      .in('type', TRACKED_NOTIFICATION_TYPES)
       .is('dismissed_at', null);
 
     if (!error) {
@@ -185,7 +208,7 @@ export function OperationalNotificationCenter() {
       <button
         type="button"
         onClick={() => setOpen((value) => !value)}
-        className={`relative rounded-full p-2 transition-colors ${criticalCount ? 'bg-rose-50 text-rose-600 hover:bg-rose-100' : 'text-slate-400 hover:bg-slate-100'}`}
+        className={`relative rounded-full p-2 transition-colors ${criticalCount ? 'bg-rose-50 text-rose-600 hover:bg-rose-100' : unreadCount ? 'bg-amber-50 text-amber-600 hover:bg-amber-100' : 'text-slate-400 hover:bg-slate-100'}`}
         aria-label={`Alertas operacionais${unreadCount ? `: ${unreadCount} não lidos` : ''}`}
         title="Alertas operacionais"
       >
@@ -210,9 +233,13 @@ export function OperationalNotificationCenter() {
               <div className="flex items-center gap-3">
                 <ShieldAlert size={20} className={criticalCount ? 'text-rose-400' : 'text-amber-400'} />
                 <div>
-                  <strong className="block text-sm">Alertas da caixa</strong>
+                  <strong className="block text-sm">Alertas operacionais</strong>
                   <span className="text-[10px] text-slate-300">
-                    {criticalCount ? `${criticalCount} alerta${criticalCount === 1 ? '' : 's'} crítico${criticalCount === 1 ? '' : 's'} pendente${criticalCount === 1 ? '' : 's'}` : 'Alterações assinadas pelos colaboradores'}
+                    {criticalCount
+                      ? `${criticalCount} ocorrência${criticalCount === 1 ? '' : 's'} crítica${criticalCount === 1 ? '' : 's'} pendente${criticalCount === 1 ? '' : 's'}`
+                      : cautionCount
+                        ? `${cautionCount} nova${cautionCount === 1 ? '' : 's'} cautela${cautionCount === 1 ? '' : 's'}/empréstimo${cautionCount === 1 ? '' : 's'}`
+                        : 'Cautelas, empréstimos e status assinados'}
                   </span>
                 </div>
               </div>
@@ -228,11 +255,12 @@ export function OperationalNotificationCenter() {
                 <div className="grid place-items-center gap-2 px-6 py-12 text-center">
                   <CheckCircle2 size={30} className="text-emerald-500" />
                   <strong className="text-sm text-slate-700">Tudo conferido</strong>
-                  <span className="text-[11px] text-slate-400">Nenhuma alteração da caixa aguarda sua atenção.</span>
+                  <span className="text-[11px] text-slate-400">Nenhuma cautela ou alteração da caixa aguarda sua atenção.</span>
                 </div>
               ) : (
                 notifications.map((notification) => {
                   const critical = isCritical(notification);
+                  const cautionActivity = isCautionActivity(notification);
                   return (
                     <button
                       type="button"
@@ -246,8 +274,8 @@ export function OperationalNotificationCenter() {
                             : 'border-slate-100 bg-white'
                       }`}
                     >
-                      <div className={`mt-0.5 grid h-9 w-9 shrink-0 place-items-center rounded-xl ${critical ? 'bg-rose-100 text-rose-600' : 'bg-emerald-100 text-emerald-600'}`}>
-                        {critical ? <AlertTriangle size={17} /> : <CheckCircle2 size={17} />}
+                      <div className={`mt-0.5 grid h-9 w-9 shrink-0 place-items-center rounded-xl ${critical ? 'bg-rose-100 text-rose-600' : cautionActivity ? 'bg-amber-100 text-amber-700' : 'bg-emerald-100 text-emerald-600'}`}>
+                        {critical ? <AlertTriangle size={17} /> : cautionActivity ? <ShieldAlert size={17} /> : <CheckCircle2 size={17} />}
                       </div>
                       <div className="min-w-0 flex-1">
                         <div className="flex items-start justify-between gap-2">
