@@ -1,7 +1,7 @@
 'use client';
 
 import { useCallback, useEffect, useMemo, useState } from 'react';
-import { AlertTriangle, Bell, CheckCircle2, ChevronRight, ShieldAlert, X } from 'lucide-react';
+import { AlertTriangle, ArrowRightLeft, Bell, CheckCircle2, ChevronRight, ShieldAlert, X } from 'lucide-react';
 import { useRouter } from 'next/navigation';
 import { supabase } from '@/lib/supabase';
 import { useAuth } from '@/lib/auth-context';
@@ -17,7 +17,7 @@ type OperationalNotification = {
   entity_id?: string | null;
 };
 
-const TRACKED_NOTIFICATION_TYPES = ['toolbox_status', 'caution_activity'];
+const TRACKED_NOTIFICATION_TYPES = ['toolbox_status', 'caution_activity', 'handover_activity'];
 
 function formatDate(value: string) {
   const date = new Date(value);
@@ -39,8 +39,12 @@ function isCautionActivity(notification: OperationalNotification) {
   return notification.type === 'caution_activity';
 }
 
+function isHandoverActivity(notification: OperationalNotification) {
+  return notification.type === 'handover_activity';
+}
+
 function shouldShowBrowserAlert(notification: OperationalNotification) {
-  return isCritical(notification) || isCautionActivity(notification);
+  return isCritical(notification) || isCautionActivity(notification) || isHandoverActivity(notification);
 }
 
 export function OperationalNotificationCenter() {
@@ -150,6 +154,10 @@ export function OperationalNotificationCenter() {
     () => notifications.filter((notification) => !notification.is_read && isCautionActivity(notification)).length,
     [notifications],
   );
+  const handoverCount = useMemo(
+    () => notifications.filter((notification) => !notification.is_read && isHandoverActivity(notification)).length,
+    [notifications],
+  );
 
   const markRead = async (notification: OperationalNotification) => {
     if (!notification.is_read) {
@@ -164,11 +172,11 @@ export function OperationalNotificationCenter() {
     }
   };
 
-  const openCautelia = async (notification?: OperationalNotification) => {
+  const openDestination = async (notification?: OperationalNotification) => {
     if (notification) await markRead(notification);
     setOpen(false);
     setToast(null);
-    router.push('/dashboard/cautelia');
+    router.push(notification && isHandoverActivity(notification) ? '/dashboard/historico' : '/dashboard/cautelia');
   };
 
   const archiveAll = async () => {
@@ -237,9 +245,11 @@ export function OperationalNotificationCenter() {
                   <span className="text-[10px] text-slate-300">
                     {criticalCount
                       ? `${criticalCount} ocorrência${criticalCount === 1 ? '' : 's'} crítica${criticalCount === 1 ? '' : 's'} pendente${criticalCount === 1 ? '' : 's'}`
-                      : cautionCount
-                        ? `${cautionCount} nova${cautionCount === 1 ? '' : 's'} cautela${cautionCount === 1 ? '' : 's'}/empréstimo${cautionCount === 1 ? '' : 's'}`
-                        : 'Cautelas, empréstimos e status assinados'}
+                      : handoverCount
+                        ? `${handoverCount} repasse${handoverCount === 1 ? '' : 's'} entre colaboradores`
+                        : cautionCount
+                          ? `${cautionCount} nova${cautionCount === 1 ? '' : 's'} cautela${cautionCount === 1 ? '' : 's'}/empréstimo${cautionCount === 1 ? '' : 's'}`
+                          : 'Cautelas, empréstimos, repasses e status assinados'}
                   </span>
                 </div>
               </div>
@@ -255,17 +265,18 @@ export function OperationalNotificationCenter() {
                 <div className="grid place-items-center gap-2 px-6 py-12 text-center">
                   <CheckCircle2 size={30} className="text-emerald-500" />
                   <strong className="text-sm text-slate-700">Tudo conferido</strong>
-                  <span className="text-[11px] text-slate-400">Nenhuma cautela ou alteração da caixa aguarda sua atenção.</span>
+                  <span className="text-[11px] text-slate-400">Nenhuma cautela, repasse ou alteração da caixa aguarda sua atenção.</span>
                 </div>
               ) : (
                 notifications.map((notification) => {
                   const critical = isCritical(notification);
                   const cautionActivity = isCautionActivity(notification);
+                  const handoverActivity = isHandoverActivity(notification);
                   return (
                     <button
                       type="button"
                       key={notification.id}
-                      onClick={() => void openCautelia(notification)}
+                      onClick={() => void openDestination(notification)}
                       className={`mb-2 flex w-full items-start gap-3 rounded-2xl border p-4 text-left transition hover:-translate-y-0.5 hover:shadow-md ${
                         critical && !notification.is_read
                           ? 'border-rose-200 bg-rose-50'
@@ -274,8 +285,8 @@ export function OperationalNotificationCenter() {
                             : 'border-slate-100 bg-white'
                       }`}
                     >
-                      <div className={`mt-0.5 grid h-9 w-9 shrink-0 place-items-center rounded-xl ${critical ? 'bg-rose-100 text-rose-600' : cautionActivity ? 'bg-amber-100 text-amber-700' : 'bg-emerald-100 text-emerald-600'}`}>
-                        {critical ? <AlertTriangle size={17} /> : cautionActivity ? <ShieldAlert size={17} /> : <CheckCircle2 size={17} />}
+                      <div className={`mt-0.5 grid h-9 w-9 shrink-0 place-items-center rounded-xl ${critical ? 'bg-rose-100 text-rose-600' : handoverActivity ? 'bg-indigo-100 text-indigo-700' : cautionActivity ? 'bg-amber-100 text-amber-700' : 'bg-emerald-100 text-emerald-600'}`}>
+                        {critical ? <AlertTriangle size={17} /> : handoverActivity ? <ArrowRightLeft size={17} /> : cautionActivity ? <ShieldAlert size={17} /> : <CheckCircle2 size={17} />}
                       </div>
                       <div className="min-w-0 flex-1">
                         <div className="flex items-start justify-between gap-2">
@@ -299,7 +310,7 @@ export function OperationalNotificationCenter() {
                 </button>
               )}
               <div className="grid grid-cols-2 gap-2">
-                <button type="button" onClick={() => void openCautelia()} className="rounded-xl bg-slate-900 px-4 py-3 text-[9px] font-black uppercase tracking-widest text-white">
+                <button type="button" onClick={() => void openDestination()} className="rounded-xl bg-slate-900 px-4 py-3 text-[9px] font-black uppercase tracking-widest text-white">
                   Abrir cautelas
                 </button>
                 <button type="button" disabled={!notifications.length} onClick={() => void archiveAll()} className="rounded-xl bg-white px-4 py-3 text-[9px] font-black uppercase tracking-widest text-slate-500 disabled:opacity-40">
@@ -314,18 +325,18 @@ export function OperationalNotificationCenter() {
       {toast && (
         <button
           type="button"
-          onClick={() => void openCautelia(toast)}
-          className={`fixed right-4 top-20 z-[110] w-[min(92vw,410px)] rounded-2xl border p-4 text-left shadow-2xl ${isCritical(toast) ? 'border-rose-200 bg-rose-50' : 'border-amber-200 bg-amber-50'}`}
+          onClick={() => void openDestination(toast)}
+          className={`fixed right-4 top-20 z-[110] w-[min(92vw,410px)] rounded-2xl border p-4 text-left shadow-2xl ${isCritical(toast) ? 'border-rose-200 bg-rose-50' : isHandoverActivity(toast) ? 'border-indigo-200 bg-indigo-50' : 'border-amber-200 bg-amber-50'}`}
         >
           <div className="flex items-start gap-3">
-            <div className={`grid h-10 w-10 shrink-0 place-items-center rounded-xl ${isCritical(toast) ? 'bg-rose-500 text-white' : 'bg-amber-400 text-slate-950'}`}>
-              {isCritical(toast) ? <AlertTriangle size={19} /> : <Bell size={19} />}
+            <div className={`grid h-10 w-10 shrink-0 place-items-center rounded-xl ${isCritical(toast) ? 'bg-rose-500 text-white' : isHandoverActivity(toast) ? 'bg-indigo-600 text-white' : 'bg-amber-400 text-slate-950'}`}>
+              {isCritical(toast) ? <AlertTriangle size={19} /> : isHandoverActivity(toast) ? <ArrowRightLeft size={19} /> : <Bell size={19} />}
             </div>
             <div className="min-w-0 flex-1">
               <span className="text-[9px] font-black uppercase tracking-[0.14em] text-slate-500">Novo alerta da Ferramentaria</span>
               <strong className="mt-1 block text-sm text-slate-900">{toast.title}</strong>
               <p className="mt-1 text-[11px] leading-relaxed text-slate-600">{toast.message}</p>
-              <span className="mt-2 block text-[9px] font-black uppercase text-slate-500">Clique para abrir Cautelas e Empréstimos</span>
+              <span className="mt-2 block text-[9px] font-black uppercase text-slate-500">{isHandoverActivity(toast) ? 'Clique para abrir o Histórico' : 'Clique para abrir Cautelas e Empréstimos'}</span>
             </div>
           </div>
         </button>
