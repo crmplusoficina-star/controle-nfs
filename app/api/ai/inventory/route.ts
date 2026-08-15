@@ -2,7 +2,10 @@ import { NextRequest, NextResponse } from 'next/server';
 
 const GROQ_URL = 'https://api.groq.com/openai/v1/chat/completions';
 const DEFAULT_MODEL = 'qwen/qwen3.6-27b';
-const MAX_IMAGES = 5;
+const MAX_CLIENT_IMAGES = 5;
+// A documentação geral de Vision e a página específica do modelo divergem hoje
+// sobre o máximo de imagens. Usamos 3 por chamada ao Groq de forma conservadora.
+const GROQ_IMAGES_PER_REQUEST = 3;
 const MAX_CATALOG_ITEMS = 200;
 const MAX_ATTEMPTS = 2;
 
@@ -24,6 +27,8 @@ type InventoryItem = {
   catalogCode: string | null;
 };
 
+type RateLimitInfo = ReturnType<typeof rateLimitFrom>;
+
 function text(value: unknown): string | null {
   if (value === null || value === undefined) return null;
   const normalized = String(value).trim();
@@ -34,6 +39,20 @@ function numberValue(value: unknown): number | null {
   if (value === null || value === undefined || value === '') return null;
   const parsed = Number(value);
   return Number.isFinite(parsed) ? parsed : null;
+}
+
+function normalize(value: string | null | undefined) {
+  return (value || '')
+    .normalize('NFD')
+    .replace(/[\u0300-\u036f]/g, '')
+    .toLowerCase()
+    .replace(/[^a-z0-9]+/g, ' ')
+    .trim()
+    .replace(/\s+/g, ' ');
+}
+
+function normalizeCode(value: string | null | undefined) {
+  return (value || '').trim().toLowerCase().replace(/\s+/g, '');
 }
 
 function parseJson(value: unknown): unknown {
@@ -92,11 +111,36 @@ function rateLimitFrom(headers: Headers) {
   };
 }
 
+function mergeInventoryItems(target: Map<string, InventoryItem>, incoming: InventoryItem[]) {
+  for (const item of incoming) {
+    const code = normalizeCode(item.catalogCode || item.code);
+    const key = code ? `code:${code}` : `name:${normalize(item.name)}`;
+    const previous = target.get(key);
+
+    if (!previous) {
+      target.set(key, item);
+      continue;
+    }
+
+    target.set(key, {
+      ...previous,
+      brand: previous.brand || item.brand,
+      quantity: Math.max(previous.quantity || 1, item.quantity || 1),
+      location: previous.location || item.location,
+      confidence: Math.max(previous.confidence, item.confidence),
+      catalogCode: previous.catalogCode || item.catalogCode,
+      code: previous.code || item.code,
+    });
+  }
+}
+
 export async function POST(req: NextRequest) {
   try {
     const body = await req.json();
     const images = Array.isArray(body?.images)
-      ? body.images.filter((value: unknown) => typeof value === 'string' && value).slice(0, MAX_IMAGES)
+      ? body.images
+          .filter((value: unknown) => typeof value === 'string' && value)
+          .slice(0, MAX_CLIENT_IMAGES)
       : [];
     const locationHint = text(body?.locationHint);
     const catalog = (Array.isArray(body?.catalog) ? body.catalog : [])
@@ -122,7 +166,9 @@ export async function POST(req: NextRequest) {
     }
 
     const catalogText = catalog.length > 0
-      ? catalog.map(item => `- ${item.name} | código: ${item.code}${item.brand ? ` | marca: ${item.brand}` : ''}`).join('\n')
+      ? catalog
+          .map(item => `- ${item.name} | código: ${item.code}${item.brand ? ` | marca: ${item.brand}` : ''}`)
+          .join('\n')
       : 'Nenhum item existente foi fornecido.';
 
     const prompt = `
@@ -157,77 +203,109 @@ CATÁLOGO EXISTENTE EM OUTRAS FILIAIS E NA FILIAL ATUAL:
 ${catalogText}
 `;
 
-    const userContent: Array<Record<string, unknown>> = [
-      { type: 'text', text: prompt },
-      ...images.map((image: string) => ({
-        type: 'image_url',
-        image_url: { url: image },
-      })),
-    ];
-
+    const mergedItems = new Map<string, InventoryItem>();
+    let lastRateLimit: RateLimitInfo | null = null;
     let lastStatus = 502;
     let lastMessage = 'Não foi possível identificar as ferramentas.';
-    let lastRateLimit: ReturnType<typeof rateLimitFrom> | null = null;
 
-    for (let attempt = 0; attempt < MAX_ATTEMPTS; attempt++) {
-      const response = await fetch(GROQ_URL, {
-        method: 'POST',
-        headers: {
-          'Content-Type': 'application/json',
-          Authorization: `Bearer ${apiKey}`,
-        },
-        body: JSON.stringify({
-          model,
-          temperature: 0,
-          reasoning_effort: 'none',
-          max_completion_tokens: 1536,
-          response_format: { type: 'json_object' },
-          messages: [
-            {
-              role: 'system',
-              content: 'Você identifica ferramentas por imagem para inventário. Seja conservador e entregue somente JSON válido.',
-            },
-            { role: 'user', content: userContent },
-          ],
-        }),
-      });
+    for (let batchStart = 0; batchStart < images.length; batchStart += GROQ_IMAGES_PER_REQUEST) {
+      const batch = images.slice(batchStart, batchStart + GROQ_IMAGES_PER_REQUEST);
+      const userContent: Array<Record<string, unknown>> = [
+        { type: 'text', text: prompt },
+        ...batch.map((image: string) => ({
+          type: 'image_url',
+          image_url: { url: image },
+        })),
+      ];
 
-      lastRateLimit = rateLimitFrom(response.headers);
-      const data = await response.json().catch(() => ({}));
+      let batchCompleted = false;
 
-      if (response.ok) {
-        const parsed = parseJson(data?.choices?.[0]?.message?.content ?? '{}');
-        if (parsed) {
+      for (let attempt = 0; attempt < MAX_ATTEMPTS; attempt++) {
+        const response = await fetch(GROQ_URL, {
+          method: 'POST',
+          headers: {
+            'Content-Type': 'application/json',
+            Authorization: `Bearer ${apiKey}`,
+          },
+          body: JSON.stringify({
+            model,
+            temperature: 0,
+            reasoning_effort: 'none',
+            max_completion_tokens: 1536,
+            response_format: { type: 'json_object' },
+            messages: [
+              {
+                role: 'system',
+                content: 'Você identifica ferramentas por imagem para inventário. Seja conservador e entregue somente JSON válido.',
+              },
+              { role: 'user', content: userContent },
+            ],
+          }),
+        });
+
+        lastRateLimit = rateLimitFrom(response.headers);
+        const data = await response.json().catch(() => ({}));
+
+        if (response.ok) {
+          const parsed = parseJson(data?.choices?.[0]?.message?.content ?? '{}');
+          if (parsed) {
+            mergeInventoryItems(mergedItems, normalizeItems(parsed));
+            batchCompleted = true;
+            break;
+          }
+          lastStatus = 502;
+          lastMessage = 'Resposta de visão incompleta.';
+        } else {
+          lastStatus = response.status;
+          lastMessage = data?.error?.message || `Erro Groq (${response.status})`;
+
+          if (response.status === 429) {
+            if (mergedItems.size > 0) {
+              return NextResponse.json({
+                items: Array.from(mergedItems.values()),
+                partial: true,
+                warning: 'Limite temporário do Groq atingido; retornando o que já foi identificado.',
+                rateLimit: lastRateLimit,
+              });
+            }
+            return NextResponse.json({
+              error: 'Limite temporário do Groq atingido.',
+              details: lastMessage,
+              rateLimit: lastRateLimit,
+            }, { status: 429 });
+          }
+
+          if (response.status < 500 || attempt === MAX_ATTEMPTS - 1) break;
+        }
+
+        if (attempt < MAX_ATTEMPTS - 1) await sleep(700);
+      }
+
+      if (!batchCompleted) {
+        if (mergedItems.size > 0) {
           return NextResponse.json({
-            items: normalizeItems(parsed),
+            items: Array.from(mergedItems.values()),
+            partial: true,
+            warning: lastMessage,
             rateLimit: lastRateLimit,
           });
         }
-        lastStatus = 502;
-        lastMessage = 'Resposta de visão incompleta.';
-      } else {
-        lastStatus = response.status;
-        lastMessage = data?.error?.message || `Erro Groq (${response.status})`;
-
-        if (response.status === 429) {
-          return NextResponse.json({
-            error: 'Limite temporário do Groq atingido.',
-            details: lastMessage,
-            rateLimit: lastRateLimit,
-          }, { status: 429 });
-        }
-
-        if (response.status < 500 || attempt === MAX_ATTEMPTS - 1) break;
+        return NextResponse.json({
+          error: 'Não foi possível analisar as fotos.',
+          details: lastMessage,
+          rateLimit: lastRateLimit,
+        }, { status: lastStatus >= 400 && lastStatus < 600 ? lastStatus : 502 });
       }
 
-      if (attempt < MAX_ATTEMPTS - 1) await sleep(700);
+      if (batchStart + GROQ_IMAGES_PER_REQUEST < images.length) {
+        await sleep(700);
+      }
     }
 
     return NextResponse.json({
-      error: 'Não foi possível analisar as fotos.',
-      details: lastMessage,
+      items: Array.from(mergedItems.values()),
       rateLimit: lastRateLimit,
-    }, { status: lastStatus >= 400 && lastStatus < 600 ? lastStatus : 502 });
+    });
   } catch (error) {
     console.error('Inventory vision error:', error);
     return NextResponse.json({
