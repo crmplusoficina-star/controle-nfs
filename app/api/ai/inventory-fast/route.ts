@@ -164,6 +164,19 @@ function attachCatalogMatches(items: InventoryItem[], catalog: CatalogItem[]) {
   });
 }
 
+function requireReviewWhenDetailsAreMissing(items: InventoryItem[]) {
+  return items.map(item => {
+    const brandKnown = Boolean(text(item.brand));
+    const quantityKnown = item.quantity !== null && Number.isFinite(item.quantity) && item.quantity > 0;
+    if (brandKnown && quantityKnown) return item;
+
+    // A tela considera >= 0.78 como elegível para confirmação automática.
+    // Se marca ou quantidade não foram obtidas com segurança, reduzimos apenas
+    // a elegibilidade automática para que o usuário veja e confira os campos.
+    return { ...item, confidence: Math.min(item.confidence, 0.77) };
+  });
+}
+
 export async function POST(req: NextRequest) {
   try {
     const body = await req.json();
@@ -266,7 +279,7 @@ Retorne SOMENTE JSON válido:
 
     const parsed = parseJson(data?.choices?.[0]?.message?.content);
     const normalized = parsed ? normalizeItems(parsed) : [];
-    const items = attachCatalogMatches(normalized, catalog);
+    const items = requireReviewWhenDetailsAreMissing(attachCatalogMatches(normalized, catalog));
 
     return NextResponse.json({
       items,
