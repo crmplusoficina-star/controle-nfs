@@ -6,6 +6,18 @@ import { motion } from 'motion/react';
 import { FileText, LogIn, ShieldCheck } from 'lucide-react';
 import { useRouter } from 'next/navigation';
 
+const RETURN_TO_KEY = 'controle_nfs_return_to';
+
+function destinationAfterLogin() {
+  if (typeof window === 'undefined') return '/dashboard';
+
+  const params = new URLSearchParams(window.location.search);
+  const candidate = params.get('next') || window.sessionStorage.getItem(RETURN_TO_KEY) || '';
+  const validDestination = candidate === '/dashboard' || candidate.startsWith('/dashboard/');
+
+  return validDestination ? candidate : '/dashboard';
+}
+
 export default function LoginPage() {
   const [matricula, setMatricula] = useState('');
   const [isError, setIsError] = useState(false);
@@ -13,7 +25,11 @@ export default function LoginPage() {
   const router = useRouter();
 
   useEffect(() => {
-    if (user) router.replace('/dashboard');
+    if (!user) return;
+
+    const destination = destinationAfterLogin();
+    window.sessionStorage.removeItem(RETURN_TO_KEY);
+    router.replace(destination);
   }, [user, router]);
 
   if (isLoading || user) return null;
