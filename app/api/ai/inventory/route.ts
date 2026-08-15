@@ -3,8 +3,7 @@ import { NextRequest, NextResponse } from 'next/server';
 const GROQ_URL = 'https://api.groq.com/openai/v1/chat/completions';
 const DEFAULT_MODEL = 'qwen/qwen3.6-27b';
 const MAX_CLIENT_IMAGES = 5;
-// A documentação geral de Vision e a página específica do modelo divergem hoje
-// sobre o máximo de imagens. Usamos 3 por chamada ao Groq de forma conservadora.
+// A página específica do Qwen 3.6 informa até 3 imagens por requisição.
 const GROQ_IMAGES_PER_REQUEST = 3;
 const MAX_CATALOG_ITEMS = 200;
 const MAX_ATTEMPTS = 2;
@@ -111,6 +110,13 @@ function rateLimitFrom(headers: Headers) {
   };
 }
 
+function canRetry(rateLimit: RateLimitInfo | null) {
+  const raw = rateLimit?.remainingRequests;
+  if (!raw) return true;
+  const remaining = Number.parseInt(raw, 10);
+  return !Number.isFinite(remaining) || remaining > 1;
+}
+
 function mergeInventoryItems(target: Map<string, InventoryItem>, incoming: InventoryItem[]) {
   for (const item of incoming) {
     const code = normalizeCode(item.catalogCode || item.code);
@@ -172,7 +178,8 @@ export async function POST(req: NextRequest) {
       : 'Nenhum item existente foi fornecido.';
 
     const prompt = `
-Analise as fotos de uma ferramentaria e identifique APENAS ferramentas, instrumentos, máquinas ou equipamentos duráveis visíveis.
+Analise as fotos de uma ferramentaria e identifique ferramentas, instrumentos, máquinas ou equipamentos duráveis visíveis.
+O objetivo principal é reconhecer o TIPO DA FERRAMENTA. Não é necessário enxergar marca, modelo ou código para preencher o nome.
 Responda com EXATAMENTE um objeto JSON, sem markdown e sem raciocínio exposto.
 
 Formato obrigatório:
@@ -191,9 +198,12 @@ Formato obrigatório:
 }
 
 Regras:
-- Não invente código, marca ou modelo.
-- Conte unidades visíveis quando for possível; se não for possível, use null.
+- Priorize preencher name quando o tipo do objeto puder ser reconhecido visualmente.
+- Se reconhecer a categoria, mas não o modelo exato, use o nome genérico correto em português, por exemplo: chave combinada, chave de impacto, alicate, soquete, torquímetro, furadeira, esmerilhadeira.
+- Não invente código, marca ou modelo. Quando não estiver visível, use null nesses campos.
+- Só devolva "items": [] quando realmente não houver nenhuma ferramenta, instrumento, máquina ou equipamento inventariável visível.
 - Se a mesma ferramenta aparecer em fotos diferentes, devolva apenas uma entrada para ela.
+- Conte unidades visíveis quando for possível; se não for possível, use null.
 - Se houver correspondência segura com o catálogo existente abaixo, use EXATAMENTE o nome e o código do catálogo e preencha catalogCode.
 - Se houver mais de um item do catálogo com nome semelhante e não der para distinguir, não force correspondência.
 - Ignore caixas, prateleiras, móveis, EPIs e consumíveis, a menos que sejam claramente parte de um equipamento inventariável.
@@ -210,17 +220,21 @@ ${catalogText}
 
     for (let batchStart = 0; batchStart < images.length; batchStart += GROQ_IMAGES_PER_REQUEST) {
       const batch = images.slice(batchStart, batchStart + GROQ_IMAGES_PER_REQUEST);
-      const userContent: Array<Record<string, unknown>> = [
-        { type: 'text', text: prompt },
-        ...batch.map((image: string) => ({
-          type: 'image_url',
-          image_url: { url: image },
-        })),
-      ];
-
       let batchCompleted = false;
 
       for (let attempt = 0; attempt < MAX_ATTEMPTS; attempt++) {
+        const attemptPrompt = attempt === 0
+          ? prompt
+          : `${prompt}\n\nREANÁLISE: a tentativa anterior não retornou uma ferramenta identificada. Observe novamente os objetos principais da imagem e, se o tipo da ferramenta estiver reconhecível, preencha name mesmo que marca, modelo e código permaneçam null.`;
+
+        const userContent: Array<Record<string, unknown>> = [
+          { type: 'text', text: attemptPrompt },
+          ...batch.map((image: string) => ({
+            type: 'image_url',
+            image_url: { url: image },
+          })),
+        ];
+
         const response = await fetch(GROQ_URL, {
           method: 'POST',
           headers: {
@@ -236,7 +250,7 @@ ${catalogText}
             messages: [
               {
                 role: 'system',
-                content: 'Você identifica ferramentas por imagem para inventário. Seja conservador e entregue somente JSON válido.',
+                content: 'Você identifica ferramentas por imagem para inventário. Priorize reconhecer o tipo da ferramenta; nunca invente marca, modelo ou código. Entregue somente JSON válido.',
               },
               { role: 'user', content: userContent },
             ],
@@ -247,38 +261,50 @@ ${catalogText}
         const data = await response.json().catch(() => ({}));
 
         if (response.ok) {
-          const parsed = parseJson(data?.choices?.[0]?.message?.content ?? '{}');
-          if (parsed) {
-            mergeInventoryItems(mergedItems, normalizeItems(parsed));
+          const rawContent = data?.choices?.[0]?.message?.content;
+          const parsed = parseJson(rawContent);
+          const normalized = parsed ? normalizeItems(parsed) : [];
+
+          if (normalized.length > 0) {
+            mergeInventoryItems(mergedItems, normalized);
             batchCompleted = true;
             break;
           }
-          lastStatus = 502;
-          lastMessage = 'Resposta de visão incompleta.';
-        } else {
-          lastStatus = response.status;
-          lastMessage = data?.error?.message || `Erro Groq (${response.status})`;
 
-          if (response.status === 429) {
-            if (mergedItems.size > 0) {
-              return NextResponse.json({
-                items: Array.from(mergedItems.values()),
-                partial: true,
-                warning: 'Limite temporário do Groq atingido; retornando o que já foi identificado.',
-                rateLimit: lastRateLimit,
-              });
-            }
-            return NextResponse.json({
-              error: 'Limite temporário do Groq atingido.',
-              details: lastMessage,
-              rateLimit: lastRateLimit,
-            }, { status: 429 });
+          lastStatus = 422;
+          lastMessage = parsed
+            ? 'A IA não identificou nenhuma ferramenta nesta tentativa.'
+            : 'Resposta de visão incompleta.';
+
+          if (attempt < MAX_ATTEMPTS - 1 && canRetry(lastRateLimit)) {
+            await sleep(350);
+            continue;
           }
-
-          if (response.status < 500 || attempt === MAX_ATTEMPTS - 1) break;
+          break;
         }
 
-        if (attempt < MAX_ATTEMPTS - 1) await sleep(700);
+        lastStatus = response.status;
+        lastMessage = data?.error?.message || `Erro Groq (${response.status})`;
+
+        if (response.status === 429) {
+          if (mergedItems.size > 0) {
+            return NextResponse.json({
+              items: Array.from(mergedItems.values()),
+              partial: true,
+              warning: 'Limite temporário do Groq atingido; retornando o que já foi identificado.',
+              rateLimit: lastRateLimit,
+            });
+          }
+          return NextResponse.json({
+            error: 'Limite temporário do Groq atingido.',
+            details: lastMessage,
+            rateLimit: lastRateLimit,
+          }, { status: 429 });
+        }
+
+        if (response.status < 500 || attempt === MAX_ATTEMPTS - 1) break;
+        if (!canRetry(lastRateLimit)) break;
+        await sleep(700);
       }
 
       if (!batchCompleted) {
@@ -291,7 +317,7 @@ ${catalogText}
           });
         }
         return NextResponse.json({
-          error: 'Não foi possível analisar as fotos.',
+          error: 'Não foi possível identificar uma ferramenta na foto.',
           details: lastMessage,
           rateLimit: lastRateLimit,
         }, { status: lastStatus >= 400 && lastStatus < 600 ? lastStatus : 502 });
