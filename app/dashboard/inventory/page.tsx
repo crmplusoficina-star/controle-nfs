@@ -1,5 +1,5 @@
-import PhotoInventory from '@/components/inventory/PhotoInventory';
+import PhotoInventoryFocused from '@/components/inventory/PhotoInventoryFocused';
 
 export default function InventoryPage() {
-  return <PhotoInventory />;
+  return <PhotoInventoryFocused />;
 }
