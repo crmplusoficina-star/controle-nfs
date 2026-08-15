@@ -1,4 +1,5 @@
 import { NextRequest, NextResponse } from 'next/server';
+import { findSafeToolNameMatch } from '@/lib/tool-name-match';
 
 const GROQ_URL = 'https://api.groq.com/openai/v1/chat/completions';
 const DEFAULT_MODEL = 'qwen/qwen3.6-27b';
@@ -165,13 +166,10 @@ function uniqueCatalogMatch(item: InventoryItem, catalog: CatalogItem[]) {
   const exactCodes = Array.from(new Set(exact.map(entry => normalizeCode(entry.code)).filter(Boolean)));
   if (exact.length > 0 && exactCodes.length === 1) return exact[0];
 
-  if (name.length < 5) return null;
-  const compatible = catalog.filter(entry => {
-    const catalogName = normalize(entry.name);
-    return catalogName.includes(name) || name.includes(catalogName);
-  });
-  const compatibleCodes = Array.from(new Set(compatible.map(entry => normalizeCode(entry.code)).filter(Boolean)));
-  return compatible.length > 0 && compatibleCodes.length === 1 ? compatible[0] : null;
+  // Reconhecimento visual costuma usar nomes equivalentes, mas não idênticos.
+  // Ex.: "alicate de corte" e "alicate cortador de fios". Só reutiliza quando
+  // há um melhor candidato claro; empate entre ferramentas parecidas fica manual.
+  return findSafeToolNameMatch(item.name, catalog);
 }
 
 function attachCatalogMatches(items: InventoryItem[], catalog: CatalogItem[]) {
