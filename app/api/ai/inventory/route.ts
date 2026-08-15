@@ -16,6 +16,13 @@ type CatalogItem = {
   brand?: string | null;
 };
 
+type BoundingBox = {
+  x1: number;
+  y1: number;
+  x2: number;
+  y2: number;
+};
+
 type InventoryItem = {
   name: string;
   code: string | null;
@@ -24,6 +31,8 @@ type InventoryItem = {
   location: string | null;
   confidence: number;
   catalogCode: string | null;
+  imageIndex: number | null;
+  bbox: BoundingBox | null;
 };
 
 type RateLimitInfo = ReturnType<typeof rateLimitFrom>;
@@ -76,7 +85,30 @@ function parseJson(value: unknown): unknown {
   return null;
 }
 
-function normalizeItems(value: unknown): InventoryItem[] {
+function clampCoordinate(value: unknown) {
+  const parsed = numberValue(value);
+  if (parsed === null) return null;
+  return Math.max(0, Math.min(1000, Math.round(parsed)));
+}
+
+function boundingBox(value: unknown): BoundingBox | null {
+  let coordinates: unknown[] | null = null;
+
+  if (Array.isArray(value) && value.length >= 4) {
+    coordinates = value.slice(0, 4);
+  } else if (value && typeof value === 'object') {
+    const box = value as Record<string, unknown>;
+    coordinates = [box.x1 ?? box.left, box.y1 ?? box.top, box.x2 ?? box.right, box.y2 ?? box.bottom];
+  }
+
+  if (!coordinates) return null;
+  const [x1, y1, x2, y2] = coordinates.map(clampCoordinate);
+  if (x1 === null || y1 === null || x2 === null || y2 === null) return null;
+  if (x2 - x1 < 8 || y2 - y1 < 8) return null;
+  return { x1, y1, x2, y2 };
+}
+
+function normalizeItems(value: unknown, locationHint: string | null, imageIndexOffset = 0): InventoryItem[] {
   const root = value && typeof value === 'object' ? value as Record<string, unknown> : {};
   const source = Array.isArray(root.items) ? root.items : [];
 
@@ -87,14 +119,20 @@ function normalizeItems(value: unknown): InventoryItem[] {
       if (!name) return null;
 
       const confidenceRaw = numberValue(item.confidence ?? item.confianca) ?? 0.5;
+      const localImageIndex = numberValue(item.imageIndex ?? item.image_index ?? item.photoIndex ?? item.foto);
+      const box = boundingBox(item.bbox ?? item.boundingBox ?? item.bounding_box ?? item.box);
+
       return {
         name,
         code: text(item.code ?? item.codigo),
         brand: text(item.brand ?? item.marca),
         quantity: numberValue(item.quantity ?? item.quantidade),
-        location: text(item.location ?? item.locacao ?? item.localizacao),
+        // A locação digitada pelo usuário é a fonte de verdade. Nunca inferir chão/piso pela imagem.
+        location: locationHint,
         confidence: Math.max(0, Math.min(1, confidenceRaw)),
         catalogCode: text(item.catalogCode ?? item.catalog_code ?? item.codigoCatalogo),
+        imageIndex: localImageIndex === null ? null : Math.max(0, Math.round(localImageIndex)) + imageIndexOffset,
+        bbox: box,
       } satisfies InventoryItem;
     })
     .filter((item): item is InventoryItem => item !== null);
@@ -139,6 +177,10 @@ function mergeInventoryItems(target: Map<string, InventoryItem>, incoming: Inven
       continue;
     }
 
+    const useIncomingVisual = Boolean(item.bbox) && (
+      !previous.bbox || item.confidence > previous.confidence
+    );
+
     target.set(key, {
       ...previous,
       brand: previous.brand || item.brand,
@@ -147,6 +189,8 @@ function mergeInventoryItems(target: Map<string, InventoryItem>, incoming: Inven
       confidence: Math.max(previous.confidence, item.confidence),
       catalogCode: previous.catalogCode || item.catalogCode,
       code: previous.code || item.code,
+      imageIndex: useIncomingVisual ? item.imageIndex : previous.imageIndex,
+      bbox: useIncomingVisual ? item.bbox : previous.bbox,
     });
   }
 }
@@ -166,9 +210,6 @@ function uniqueCatalogMatch(item: InventoryItem, catalog: CatalogItem[]) {
   const exactCodes = Array.from(new Set(exact.map(entry => normalizeCode(entry.code)).filter(Boolean)));
   if (exact.length > 0 && exactCodes.length === 1) return exact[0];
 
-  // Reconhecimento visual costuma usar nomes equivalentes, mas não idênticos.
-  // Ex.: "alicate de corte" e "alicate cortador de fios". Só reutiliza quando
-  // há um melhor candidato claro; empate entre ferramentas parecidas fica manual.
   return findSafeToolNameMatch(item.name, catalog);
 }
 
@@ -210,7 +251,7 @@ export async function POST(req: NextRequest) {
           .filter((value: unknown) => typeof value === 'string' && value)
           .slice(0, MAX_CLIENT_IMAGES)
       : [];
-    const locationHint = text(body?.locationHint);
+    const locationHint = text(body?.locationHint)?.toUpperCase() || null;
     const catalog = (Array.isArray(body?.catalog) ? body.catalog : [])
       .slice(0, MAX_CATALOG_ITEMS)
       .map((raw: unknown) => {
@@ -238,12 +279,18 @@ Faça um inventário visual de TODOS os itens de estoque claramente visíveis na
 O inventário inclui ferramentas, peças, filtros, baterias, óleos, lubrificantes, fluidos, produtos químicos de oficina, consumíveis, instrumentos, máquinas e equipamentos.
 
 LEIA O RÓTULO quando houver embalagem, frasco, caixa ou etiqueta. Use marca, linha, especificação e texto legível para sugerir um nome útil e específico do produto.
-Se o rótulo permitir reconhecer com segurança a finalidade conhecida do produto, inclua essa finalidade no nome. Exemplo: um frasco identificado como "PAG 46" pode ser nomeado como "Óleo PAG 46 para compressor de ar-condicionado automotivo" quando o contexto/rótulo sustentar isso.
+
+Além de identificar cada item, LOCALIZE-O NA FOTO para que o sistema possa recortar somente o objeto identificado.
+As imagens desta chamada são numeradas a partir de ZERO: 0 para a primeira imagem, 1 para a segunda.
+Para cada item retorne:
+- imageIndex: índice zero-based da foto onde o item aparece melhor;
+- bbox: [x1,y1,x2,y2] em coordenadas normalizadas de 0 a 1000, envolvendo APENAS o item, com enquadramento justo. Não inclua grande área de chão, piso, mesa ou prateleira.
 
 Retorne SOMENTE JSON válido neste formato:
-{"items":[{"name":"nome objetivo e útil em português","code":null,"brand":null,"quantity":1,"location":${locationHint ? JSON.stringify(locationHint) : 'null'},"confidence":0.0,"catalogCode":null}]}
+{"items":[{"name":"nome objetivo e útil em português","code":null,"brand":null,"quantity":1,"confidence":0.0,"catalogCode":null,"imageIndex":0,"bbox":[120,80,760,920]}]}
 
 Regras:
+- NÃO tente identificar a locação pela imagem. A locação já foi informada pelo usuário como ${locationHint ? JSON.stringify(locationHint) : 'null'} e será aplicada pelo sistema.
 - NÃO descarte um item só porque ele é consumível, óleo, fluido, filtro, bateria ou material de oficina.
 - Para produtos embalados, priorize primeiro a leitura do rótulo; depois a forma visual da embalagem.
 - Preencha brand quando a marca estiver legível no rótulo.
@@ -252,8 +299,9 @@ Regras:
 - Um texto como PAG 46, 15W40, DOT 4, ISO 46, R134a, 10W30 etc. é especificação do produto e pode fazer parte do name; não trate automaticamente como código interno.
 - Para ferramentas sem rótulo, reconheça o tipo visualmente: chave combinada, chave de impacto, alicate, soquete, torquímetro, furadeira, esmerilhadeira etc.
 - Conte unidades apenas quando estiver claro; caso contrário use null.
-- Se o mesmo item aparecer repetido nas fotos, não duplique.
+- Se o mesmo item aparecer repetido nas fotos, não duplique; escolha a foto em que ele estiver mais nítido e informe o imageIndex correspondente.
 - Ignore somente o que claramente NÃO é item de estoque: prateleiras, paredes, piso, mesas e mobiliário.
+- bbox deve ser justo ao objeto. Se não conseguir delimitar com segurança, use null em vez de inventar coordenadas.
 - Só use "items":[] quando realmente não houver nenhum item de estoque reconhecível na foto.
 - confidence deve ficar entre 0 e 1.
 `;
@@ -320,7 +368,7 @@ Regras:
 
       const rawContent = data?.choices?.[0]?.message?.content;
       const parsed = parseJson(rawContent);
-      const normalized = parsed ? normalizeItems(parsed) : [];
+      const normalized = parsed ? normalizeItems(parsed, locationHint, batchStart) : [];
       const matched = attachCatalogMatches(normalized, catalog);
 
       if (matched.length === 0) {
