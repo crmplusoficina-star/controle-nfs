@@ -82,7 +82,7 @@ function normalizeItems(value: unknown): InventoryItem[] {
   return source
     .map(raw => {
       const item = raw && typeof raw === 'object' ? raw as Record<string, unknown> : {};
-      const name = text(item.name ?? item.toolName ?? item.ferramenta);
+      const name = text(item.name ?? item.toolName ?? item.ferramenta ?? item.material ?? item.produto);
       if (!name) return null;
 
       const confidenceRaw = numberValue(item.confidence ?? item.confianca) ?? 0.5;
@@ -236,18 +236,27 @@ export async function POST(req: NextRequest) {
     }
 
     const prompt = `
-Faça um inventário visual das ferramentas e equipamentos duráveis mostrados nas fotos.
-Reconheça principalmente o TIPO da ferramenta; marca, modelo e código só devem ser preenchidos quando estiverem realmente visíveis.
+Faça um inventário visual de TODOS os itens de estoque claramente visíveis nas fotos.
+O inventário inclui ferramentas, peças, filtros, baterias, óleos, lubrificantes, fluidos, produtos químicos de oficina, consumíveis, instrumentos, máquinas e equipamentos.
+
+LEIA O RÓTULO quando houver embalagem, frasco, caixa ou etiqueta. Use marca, linha, especificação e texto legível para sugerir um nome útil e específico do produto.
+Se o rótulo permitir reconhecer com segurança a finalidade conhecida do produto, inclua essa finalidade no nome. Exemplo: um frasco identificado como "PAG 46" pode ser nomeado como "Óleo PAG 46 para compressor de ar-condicionado automotivo" quando o contexto/rótulo sustentar isso.
+
 Retorne SOMENTE JSON válido neste formato:
-{"items":[{"name":"nome objetivo em português","code":null,"brand":null,"quantity":1,"location":${locationHint ? JSON.stringify(locationHint) : 'null'},"confidence":0.0,"catalogCode":null}]}
+{"items":[{"name":"nome objetivo e útil em português","code":null,"brand":null,"quantity":1,"location":${locationHint ? JSON.stringify(locationHint) : 'null'},"confidence":0.0,"catalogCode":null}]}
 
 Regras:
-- Não invente código, marca ou modelo.
-- Se reconhecer a categoria, use um nome objetivo, por exemplo: chave combinada, chave de impacto, alicate, soquete, torquímetro, furadeira ou esmerilhadeira.
+- NÃO descarte um item só porque ele é consumível, óleo, fluido, filtro, bateria ou material de oficina.
+- Para produtos embalados, priorize primeiro a leitura do rótulo; depois a forma visual da embalagem.
+- Preencha brand quando a marca estiver legível no rótulo.
+- Em name, combine tipo do produto + especificação/modelo quando isso estiver legível e fizer sentido.
+- Não invente código de peça, código interno, marca ou modelo. Se não estiver visível ou não for seguro, use null.
+- Um texto como PAG 46, 15W40, DOT 4, ISO 46, R134a, 10W30 etc. é especificação do produto e pode fazer parte do name; não trate automaticamente como código interno.
+- Para ferramentas sem rótulo, reconheça o tipo visualmente: chave combinada, chave de impacto, alicate, soquete, torquímetro, furadeira, esmerilhadeira etc.
 - Conte unidades apenas quando estiver claro; caso contrário use null.
-- Se a mesma ferramenta aparecer repetida nas fotos, não duplique.
-- Ignore caixas, prateleiras, móveis, EPIs e consumíveis.
-- Só use "items":[] quando realmente não houver ferramenta ou equipamento inventariável visível.
+- Se o mesmo item aparecer repetido nas fotos, não duplique.
+- Ignore somente o que claramente NÃO é item de estoque: prateleiras, paredes, piso, mesas e mobiliário.
+- Só use "items":[] quando realmente não houver nenhum item de estoque reconhecível na foto.
 - confidence deve ficar entre 0 e 1.
 `;
 
@@ -305,7 +314,7 @@ Regras:
 
       if (!response.ok) {
         return NextResponse.json({
-          error: 'Não foi possível identificar uma ferramenta na foto.',
+          error: 'Não foi possível identificar um item na foto.',
           details: data?.error?.message || `Erro Groq (${response.status})`,
           rateLimit: lastRateLimit,
         }, { status: response.status >= 400 && response.status < 600 ? response.status : 502 });
@@ -318,8 +327,8 @@ Regras:
 
       if (matched.length === 0) {
         return NextResponse.json({
-          error: 'A IA não identificou nenhuma ferramenta nesta foto.',
-          details: parsed ? 'Nenhuma ferramenta reconhecida.' : 'Resposta de visão incompleta.',
+          error: 'A IA não identificou nenhum item de estoque nesta foto.',
+          details: parsed ? 'Nenhum item reconhecido.' : 'Resposta de visão incompleta.',
           rateLimit: lastRateLimit,
         }, { status: 422 });
       }
