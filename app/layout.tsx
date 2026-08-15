@@ -2,6 +2,7 @@ import type {Metadata} from 'next';
 import './globals.css';
 import { AuthProvider } from '@/lib/auth-context';
 import { ExternalSignatureFixes } from '@/components/external-signature-fixes';
+import { DeepLinkReturnManager } from '@/components/DeepLinkReturnManager';
 import { Inter, Space_Grotesk } from 'next/font/google';
 
 const inter = Inter({
@@ -24,8 +25,7 @@ const preserveDeepLinkScript = `
   try {
     var path = window.location.pathname || '';
     var isDashboard = path === '/dashboard' || path.indexOf('/dashboard/') === 0;
-    var hasLocalSession = !!window.localStorage.getItem('controle_nfs_user');
-    if (isDashboard && !hasLocalSession) {
+    if (isDashboard) {
       window.sessionStorage.setItem(
         'controle_nfs_return_to',
         path + window.location.search + window.location.hash
@@ -41,6 +41,7 @@ export default function RootLayout({children}: {children: React.ReactNode}) {
       <body suppressHydrationWarning className="antialiased bg-slate-100 text-slate-800 font-sans">
         <script dangerouslySetInnerHTML={{ __html: preserveDeepLinkScript }} />
         <AuthProvider>
+          <DeepLinkReturnManager />
           <ExternalSignatureFixes />
           {children}
         </AuthProvider>
