@@ -57,8 +57,10 @@ type AiItem = {
   catalogCode?: string | null;
 };
 type RateInfo = {
+  limitRequests?: string | null;
   remainingRequests?: string | null;
   resetRequests?: string | null;
+  limitTokens?: string | null;
   remainingTokens?: string | null;
   resetTokens?: string | null;
   retryAfter?: string | null;
@@ -106,7 +108,7 @@ async function imageAsDataUrl(file: File) {
     img.src = original;
   });
 
-  const scale = Math.min(1, 1280 / Math.max(image.width, image.height));
+  const scale = Math.min(1, 960 / Math.max(image.width, image.height));
   const canvas = document.createElement('canvas');
   canvas.width = Math.max(1, Math.round(image.width * scale));
   canvas.height = Math.max(1, Math.round(image.height * scale));
@@ -114,10 +116,10 @@ async function imageAsDataUrl(file: File) {
   if (!context) return original;
   context.drawImage(image, 0, 0, canvas.width, canvas.height);
 
-  let quality = 0.75;
+  let quality = 0.68;
   let result = canvas.toDataURL('image/jpeg', quality);
-  while (result.length > 650_000 && quality > 0.43) {
-    quality -= 0.08;
+  while (result.length > 420_000 && quality > 0.4) {
+    quality -= 0.07;
     result = canvas.toDataURL('image/jpeg', quality);
   }
   return result;
@@ -340,11 +342,15 @@ export default function PhotoInventory() {
         if (data?.rateLimit) setRateInfo(data.rateLimit);
         if (!response.ok) {
           interrupted = response.status === 429
-            ? `Limite temporário do Groq atingido.${data?.rateLimit?.retryAfter ? ` Tente novamente em cerca de ${data.rateLimit.retryAfter}s.` : ''}`
+            ? `Capacidade por minuto do Groq atingida.${data?.rateLimit?.retryAfter ? ` Tente novamente em cerca de ${data.rateLimit.retryAfter}s.` : ''}`
             : (data?.details || data?.error || 'Falha na análise das fotos.');
           break;
         }
         if (Array.isArray(data?.items)) found.push(...data.items);
+        if (data?.partial || data?.warning) {
+          interrupted = data?.warning || 'A análise foi concluída parcialmente.';
+          break;
+        }
         if (index + MAX_IMAGES_PER_REQUEST < dataUrls.length) await pause(900);
       }
 
@@ -534,7 +540,7 @@ export default function PhotoInventory() {
 
       <section className="bg-white border border-slate-100 shadow-sm rounded-[2rem] p-6 md:p-8">
         <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-4 mb-5">
-          <div className="flex items-center gap-3"><Camera className="text-amber-600" /><div><h2 className="font-black uppercase italic text-slate-900">2. Fotos</h2><p className="text-xs font-bold text-slate-400">Pode tirar várias. O sistema agrupa até 5 por chamada de reconhecimento.</p></div></div>
+          <div className="flex items-center gap-3"><Camera className="text-amber-600" /><div><h2 className="font-black uppercase italic text-slate-900">2. Fotos</h2><p className="text-xs font-bold text-slate-400">Pode tirar várias. O sistema otimiza e controla o envio para não estourar o limite da IA.</p></div></div>
           <div className="flex gap-2">
             <button onClick={() => cameraRef.current?.click()} className="px-4 py-3 bg-slate-900 text-white rounded-xl font-black uppercase text-xs flex items-center gap-2"><Camera size={16} /> Câmera</button>
             <button onClick={() => galleryRef.current?.click()} className="px-4 py-3 bg-slate-100 text-slate-700 rounded-xl font-black uppercase text-xs flex items-center gap-2"><Images size={16} /> Galeria</button>
@@ -560,7 +566,13 @@ export default function PhotoInventory() {
         <button onClick={analyze} disabled={analyzing || photos.length === 0} className="w-full mt-6 py-5 bg-indigo-600 hover:bg-indigo-500 disabled:opacity-50 text-white rounded-2xl font-black uppercase tracking-widest text-xs flex items-center justify-center gap-3">
           {analyzing ? <><Loader2 size={19} className="animate-spin" /> Identificando...</> : <><Sparkles size={19} /> Identificar automaticamente</>}
         </button>
-        {rateInfo?.remainingRequests && <p className="mt-3 text-[10px] font-bold text-slate-400">Groq informou {rateInfo.remainingRequests} requisições restantes{rateInfo.resetRequests ? ` • reset em ${rateInfo.resetRequests}` : ''}.</p>}
+        {(rateInfo?.remainingTokens || rateInfo?.remainingRequests) && (
+          <p className="mt-3 text-[10px] font-bold text-slate-400">
+            {rateInfo?.remainingTokens ? `Capacidade neste minuto: ${rateInfo.remainingTokens}${rateInfo.limitTokens ? ` de ${rateInfo.limitTokens}` : ''} tokens${rateInfo.resetTokens ? ` • renova em ${rateInfo.resetTokens}` : ''}` : ''}
+            {rateInfo?.remainingTokens && rateInfo?.remainingRequests ? ' • ' : ''}
+            {rateInfo?.remainingRequests ? `${rateInfo.remainingRequests} requisições disponíveis no limite diário` : ''}
+          </p>
+        )}
       </section>
 
       {message && <div className="p-4 rounded-2xl bg-amber-50 border border-amber-200 text-amber-800 font-bold text-sm flex gap-3"><AlertTriangle size={20} className="shrink-0" />{message}</div>}
