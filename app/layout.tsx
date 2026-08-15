@@ -19,10 +19,27 @@ export const metadata: Metadata = {
   description: 'Backoffice administrativo de notas fiscais, estoque, ferramentas, cautelas e auditoria.',
 };
 
+const preserveDeepLinkScript = `
+(function () {
+  try {
+    var path = window.location.pathname || '';
+    var isDashboard = path === '/dashboard' || path.indexOf('/dashboard/') === 0;
+    var hasLocalSession = !!window.localStorage.getItem('controle_nfs_user');
+    if (isDashboard && !hasLocalSession) {
+      window.sessionStorage.setItem(
+        'controle_nfs_return_to',
+        path + window.location.search + window.location.hash
+      );
+    }
+  } catch (_) {}
+})();
+`;
+
 export default function RootLayout({children}: {children: React.ReactNode}) {
   return (
     <html lang="pt-BR" className={`${inter.variable} ${spaceGrotesk.variable}`} suppressHydrationWarning>
       <body suppressHydrationWarning className="antialiased bg-slate-100 text-slate-800 font-sans">
+        <script dangerouslySetInnerHTML={{ __html: preserveDeepLinkScript }} />
         <AuthProvider>
           <ExternalSignatureFixes />
           {children}
