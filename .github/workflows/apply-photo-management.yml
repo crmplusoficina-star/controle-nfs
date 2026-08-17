@@ -1,0 +1,36 @@
+name: Aplicar gerenciamento de fotos
+
+on:
+  push:
+    branches:
+      - feat/gerenciar-fotos-ajustes
+    paths:
+      - scripts/patch-photo-management.py
+      - .github/workflows/apply-photo-management.yml
+
+permissions:
+  contents: write
+
+jobs:
+  patch:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: feat/gerenciar-fotos-ajustes
+          fetch-depth: 0
+      - name: Aplicar patch
+        run: python scripts/patch-photo-management.py
+      - name: Validar diff
+        run: git diff --check
+      - name: Commitar página alterada
+        run: |
+          if git diff --quiet -- app/dashboard/inventory/adjustments/page.tsx; then
+            echo "Nenhuma alteração pendente."
+            exit 0
+          fi
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add app/dashboard/inventory/adjustments/page.tsx
+          git commit -m "feat: trocar e excluir fotos nos ajustes"
+          git push origin HEAD:feat/gerenciar-fotos-ajustes
