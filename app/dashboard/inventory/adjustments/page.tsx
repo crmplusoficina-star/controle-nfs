@@ -64,7 +64,7 @@ function normalize(value?: string | null) {
 
 function photoFromInventory(tool: Tool) {
   const urls = [tool.image_url, ...(Array.isArray(tool.image_urls) ? tool.image_urls : [])].filter(Boolean) as string[];
-  return urls.some(url => normalize(url).includes('inventario/recortes'));
+  return urls.some(url => normalize(url).includes('ferramentas/inventario/'));
 }
 
 function mainPhoto(tool: Tool) {
@@ -89,7 +89,7 @@ export default function InventoryAdjustmentsPage() {
   const [tools, setTools] = useState<Tool[]>([]);
   const [drafts, setDrafts] = useState<Record<string, Draft>>({});
   const [query, setQuery] = useState('');
-  const [filter, setFilter] = useState<FilterMode>('photos');
+  const [filter, setFilter] = useState<FilterMode>('all');
   const [loading, setLoading] = useState(true);
   const [savingId, setSavingId] = useState('');
   const [message, setMessage] = useState('');
@@ -320,7 +320,7 @@ export default function InventoryAdjustmentsPage() {
               <article key={tool.id} className={`bg-white border rounded-3xl shadow-sm overflow-hidden ${!draft.name.trim() ? 'border-amber-200' : 'border-slate-100'}`}>
                 <div className="p-4 md:p-5 grid grid-cols-1 lg:grid-cols-[110px_1fr_auto] gap-4 items-start">
                   <div className="relative w-full lg:w-[110px] h-36 lg:h-[110px] rounded-2xl overflow-hidden bg-slate-50 border border-slate-100">
-                    {photo ? <Image src={photo} alt={draft.name || draft.code || 'Ferramenta'} fill unoptimized className="object-contain" /> : <div className="w-full h-full flex items-center justify-center text-slate-250"><ImageIcon size={30} className="text-slate-300" /></div>}
+                    {photo ? <Image src={photo} alt={draft.name || draft.code || 'Ferramenta'} fill unoptimized className="object-contain" /> : <div className="w-full h-full flex items-center justify-center"><ImageIcon size={30} className="text-slate-300" /></div>}
                   </div>
 
                   <div className="space-y-3 min-w-0">
