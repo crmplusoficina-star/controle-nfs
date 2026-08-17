@@ -1,0 +1,25 @@
+from pathlib import Path
+
+path = Path('app/dashboard/inventory/adjustments/page.tsx')
+source = path.read_text()
+
+source = source.replace("type FilterMode = 'photos' | 'unnamed' | 'generated' | 'all';", "type FilterMode = 'photos' | 'unnamed' | 'generated' | 'all';\ntype SortMode = 'pending' | 'recent';")
+
+source = source.replace("  const [filter, setFilter] = useState<FilterMode>('all');", "  const [filter, setFilter] = useState<FilterMode>('all');\n  const [sortMode, setSortMode] = useState<SortMode>('pending');")
+
+old_visible = '''  const visibleTools = useMemo(() => {\n    const needle = normalize(query);\n    return tools.filter(tool => {\n      const draft = drafts[tool.id] || makeDraft(tool);\n      if (filter === 'photos' && !photoFromInventory(tool)) return false;\n      if (filter === 'unnamed' && draft.name.trim()) return false;\n      if (filter === 'generated' && !normalize(draft.code).startsWith('gen-')) return false;\n      if (!needle) return true;\n      return [draft.name, draft.code, draft.brand, draft.location]\n        .some(value => normalize(value).includes(needle));\n    });\n  }, [tools, drafts, filter, query]);'''
+new_visible = '''  const visibleTools = useMemo(() => {\n    const needle = normalize(query);\n    const filtered = tools.filter(tool => {\n      const draft = drafts[tool.id] || makeDraft(tool);\n      if (filter === 'photos' && !photoFromInventory(tool)) return false;\n      if (filter === 'unnamed' && draft.name.trim()) return false;\n      if (filter === 'generated' && !normalize(draft.code).startsWith('gen-')) return false;\n      if (!needle) return true;\n      return [draft.name, draft.code, draft.brand, draft.location]\n        .some(value => normalize(value).includes(needle));\n    });\n\n    return [...filtered].sort((a, b) => {\n      const modified = String(b.updated_at || b.created_at || '').localeCompare(String(a.updated_at || a.created_at || ''));\n      if (sortMode === 'recent') return modified;\n\n      const draftA = drafts[a.id] || makeDraft(a);\n      const draftB = drafts[b.id] || makeDraft(b);\n      const pendingA = draftA.name.trim() ? 1 : 0;\n      const pendingB = draftB.name.trim() ? 1 : 0;\n      if (pendingA !== pendingB) return pendingA - pendingB;\n      return modified;\n    });\n  }, [tools, drafts, filter, query, sortMode]);'''
+if old_visible not in source:
+    raise SystemExit('visibleTools block not found')
+source = source.replace(old_visible, new_visible)
+
+old_filters = '''          <div className="flex flex-wrap gap-2">\n            {([\n              ['photos', `Das fotos (${photoCount})`],\n              ['unnamed', `Sem nome (${unnamedCount})`],\n              ['generated', `Código GEN (${generatedCount})`],\n              ['all', `Todos (${tools.length})`],\n            ] as [FilterMode, string][]).map(([value, label]) => (\n              <button key={value} onClick={() => setFilter(value)} className={`px-3 py-2.5 rounded-xl font-black uppercase text-[9px] flex items-center gap-1.5 ${filter === value ? 'bg-indigo-600 text-white' : 'bg-slate-50 text-slate-600'}`}><Filter size={12} /> {label}</button>\n            ))}\n          </div>'''
+new_filters = '''          <div className="flex flex-wrap gap-2 items-center">\n            <select\n              value={sortMode}\n              onChange={event => setSortMode(event.target.value as SortMode)}\n              className="px-3 py-2.5 rounded-xl bg-slate-900 text-white font-black uppercase text-[9px] outline-none focus:ring-2 focus:ring-indigo-400"\n              aria-label="Classificar ferramentas"\n              title="Classificar ferramentas"\n            >\n              <option value="pending">Classificação: pendências primeiro</option>\n              <option value="recent">Classificação: últimos modificados</option>\n            </select>\n            {([\n              ['photos', `Das fotos (${photoCount})`],\n              ['unnamed', `Sem nome (${unnamedCount})`],\n              ['generated', `Código GEN (${generatedCount})`],\n              ['all', `Todos (${tools.length})`],\n            ] as [FilterMode, string][]).map(([value, label]) => (\n              <button key={value} onClick={() => setFilter(value)} className={`px-3 py-2.5 rounded-xl font-black uppercase text-[9px] flex items-center gap-1.5 ${filter === value ? 'bg-indigo-600 text-white' : 'bg-slate-50 text-slate-600'}`}><Filter size={12} /> {label}</button>\n            ))}\n          </div>'''
+if old_filters not in source:
+    raise SystemExit('filter controls block not found')
+source = source.replace(old_filters, new_filters)
+
+source = source.replace('Use “Adicionar foto” para incluir novas imagens. Em cada foto você pode trocar ou excluir individualmente; código, saldo e histórico da ferramenta são preservados.', 'Use “Adicionar foto” para incluir novas imagens. Em “Classificação”, escolha “Últimos modificados” para ver primeiro tudo que foi alterado recentemente. Em cada foto você pode trocar ou excluir individualmente; código, saldo e histórico da ferramenta são preservados.')
+
+path.write_text(source)
+print('Recent sort patch applied successfully.')
