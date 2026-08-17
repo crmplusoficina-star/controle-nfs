@@ -43,6 +43,7 @@ export default function StockPage() {
   const { user } = useAuth();
   const [viewMode, setViewMode] = useState<'grid' | 'list'>('grid');
   const [tools, setTools] = useState<any[]>([]);
+  const [globalTools, setGlobalTools] = useState<any[]>([]);
   const [branches, setBranches] = useState<any[]>([]);
   const [isLoading, setIsLoading] = useState(true);
   const [searchTerm, setSearchTerm] = useState('');
@@ -114,56 +115,141 @@ export default function StockPage() {
         setToolHistory([]);
         return;
       }
-      
+
       try {
-        // Fetch Current Holders
-        const { data: cautelasData } = await supabase
-          .from('cautelas')
-          .select('user_id, type, created_at')
-          .eq('tool_id', selectedTool.id)
-          .order('created_at', { ascending: false });
-          
-        // Fetch Transaction History
-        const { data: historyData } = await supabase
-          .from('transactions')
-          .select('*, tools(name)')
-          .eq('tool_id', selectedTool.id)
-          .order('created_at', { ascending: false });
+        const [{ data: cautelasData }, { data: historyData }, { data: handoversData }] = await Promise.all([
+          supabase
+            .from('cautelas')
+            .select('id, user_id, type, status, created_at')
+            .eq('tool_id', selectedTool.id)
+            .order('created_at', { ascending: false }),
+          supabase
+            .from('transactions')
+            .select('*, tools(name)')
+            .eq('tool_id', selectedTool.id)
+            .order('created_at', { ascending: false }),
+          supabase
+            .from('tool_handovers')
+            .select('*')
+            .eq('tool_id', selectedTool.id)
+            .eq('status', 'active')
+            .is('returned_at', null)
+            .order('created_at', { ascending: false }),
+        ]);
 
         setToolHistory(historyData || []);
-        
-        if (!cautelasData || cautelasData.length === 0) {
-          setToolHolders([]);
-        } else {
-          const userIds = Array.from(new Set(cautelasData.map(c => c.user_id).filter(Boolean)));
-          const userMap = new Map();
-          if (userIds.length > 0) {
-             const queryIds = userIds.flatMap(id => [id, id.replace('#',''), `#${id.replace('#','')}`]);
-             const { data: users } = await supabase.from('users_access').select('registration, name').in('registration', queryIds);
-             users?.forEach(u => userMap.set(u.registration.replace('#', ''), u.name));
+
+        const normalizedRegistration = (value: any) => String(value || '').replace('#', '').trim();
+        const registrations = new Set<string>();
+        (cautelasData || []).forEach((row: any) => row.user_id && registrations.add(normalizedRegistration(row.user_id)));
+        (historyData || []).forEach((row: any) => row.user_id && registrations.add(normalizedRegistration(row.user_id)));
+        (handoversData || []).forEach((row: any) => {
+          if (row.lender_registration) registrations.add(normalizedRegistration(row.lender_registration));
+          if (row.borrower_registration) registrations.add(normalizedRegistration(row.borrower_registration));
+          if (row.original_owner_registration) registrations.add(normalizedRegistration(row.original_owner_registration));
+        });
+
+        const userMap = new Map<string, string>();
+        if (registrations.size > 0) {
+          const queryIds = Array.from(registrations).flatMap(id => [id, `#${id}`]);
+          const { data: people } = await supabase
+            .from('users_access')
+            .select('registration, name')
+            .in('registration', queryIds);
+          (people || []).forEach((person: any) => userMap.set(normalizedRegistration(person.registration), person.name));
+        }
+        const nameFor = (registration: string) => userMap.get(normalizedRegistration(registration)) || registration;
+        const holders = new Map<string, any>();
+
+        (cautelasData || [])
+          .filter((row: any) => row.user_id && String(row.status || '').toLowerCase() !== 'missing')
+          .forEach((row: any) => {
+            const registration = normalizedRegistration(row.user_id);
+            const isLoan = ['loan', 'borrow', 'emprestimo', 'empréstimo'].includes(String(row.type || '').toLowerCase());
+            holders.set(registration, {
+              source: 'cautela',
+              user_id: row.user_id,
+              registration,
+              responsible_name: nameFor(registration),
+              possession_name: nameFor(registration),
+              raw_type: isLoan ? 'loan' : 'caution',
+              type: isLoan ? 'Empréstimo' : 'Cautela',
+              created_at: row.created_at,
+            });
+          });
+
+        const latestByUser = new Map<string, any>();
+        (historyData || []).forEach((row: any) => {
+          if (!row.user_id || !['borrow', 'return'].includes(String(row.type || ''))) return;
+          const registration = normalizedRegistration(row.user_id);
+          if (!latestByUser.has(registration)) latestByUser.set(registration, row);
+        });
+        latestByUser.forEach((row: any, registration: string) => {
+          if (row.type !== 'borrow' || ['cancelled', 'returned', 'pending', 'pending_signature'].includes(String(row.status || '').toLowerCase())) return;
+          if (holders.has(registration)) return;
+          const isCaution = String(row.obs || '').toLowerCase().includes('cautela');
+          holders.set(registration, {
+            source: 'transaction',
+            user_id: row.user_id,
+            registration,
+            responsible_name: nameFor(registration),
+            possession_name: nameFor(registration),
+            raw_type: isCaution ? 'caution' : 'loan',
+            type: isCaution ? 'Cautela' : 'Empréstimo',
+            created_at: row.created_at,
+          });
+        });
+
+        (handoversData || []).forEach((row: any) => {
+          const borrower = normalizedRegistration(row.borrower_registration);
+          const lender = normalizedRegistration(row.lender_registration);
+          const owner = normalizedRegistration(row.original_owner_registration || row.lender_registration);
+          const kind = String(row.handover_type || '').toLowerCase();
+          if (!borrower) return;
+
+          if (['transfer', 'loan_transfer'].includes(kind)) {
+            if (lender) holders.delete(lender);
+            if (owner) holders.delete(owner);
+            holders.set(borrower, {
+              source: 'handover',
+              user_id: row.borrower_registration,
+              registration: borrower,
+              responsible_name: nameFor(borrower),
+              possession_name: nameFor(borrower),
+              raw_type: 'loan',
+              type: 'Empréstimo',
+              created_at: row.created_at,
+              note: lender ? `Responsabilidade transferida por ${nameFor(lender)}.` : 'Responsabilidade transferida.',
+            });
+            return;
           }
 
-          const mappedData = cautelasData.map(c => {
-             let rName = c.user_id;
-             if (c.user_id) {
-                 const n = userMap.get(c.user_id.replace('#',''));
-                 if (n) rName = n;
-             }
-             return {
-                responsible_name: rName,
-                user_id: c.user_id,
-                raw_type: c.type,
-                type: c.type === 'loan' ? 'Empréstimo' : 'Cautela',
-                created_at: c.created_at
-             };
-          });
-          setToolHolders(mappedData);
-        }
+          if (kind.includes('peer')) {
+            const responsible = owner || lender;
+            if (!responsible) return;
+            const current = holders.get(responsible);
+            holders.set(responsible, {
+              source: current?.source || 'handover',
+              user_id: current?.user_id || row.original_owner_registration || row.lender_registration,
+              registration: responsible,
+              responsible_name: nameFor(responsible),
+              possession_name: nameFor(borrower),
+              possession_registration: borrower,
+              raw_type: 'caution',
+              type: 'Cautela',
+              created_at: current?.created_at || row.created_at,
+              note: `Responsabilidade com ${nameFor(responsible)}; posse atual com ${nameFor(borrower)}.`,
+            });
+          }
+        });
+
+        setToolHolders(Array.from(holders.values()));
       } catch (err) {
-        console.error("Erro ao buscar dados da ferramenta:", err);
+        console.error('Erro ao buscar dados da ferramenta:', err);
+        setToolHolders([]);
       }
     };
-    
+
     if (isFichaModalOpen) {
       fetchHoldersAndHistory();
     }
@@ -244,6 +330,19 @@ export default function StockPage() {
       if (toolsData) {
         console.log('DEBUG StockPage toolsData:', toolsData);
         setTools(toolsData);
+        if (user.role !== 'Operador') setGlobalTools(toolsData);
+      }
+
+      // A operação normal do Operador continua limitada à sua filial, mas a busca
+      // de disponibilidade precisa consultar o catálogo global, assim como o app
+      // Ferramentaria. Nenhuma alteração de estoque é liberada por este carregamento.
+      if (user.role === 'Operador') {
+        const { data: globalToolsData, error: globalToolsError } = await supabase
+          .from('tools')
+          .select('*')
+          .order('created_at', { ascending: false });
+        if (globalToolsError) throw globalToolsError;
+        setGlobalTools(globalToolsData || []);
       }
 
       // Fetch Branches
@@ -617,14 +716,23 @@ export default function StockPage() {
     }
   };
 
-  const filteredTools = tools.filter(tool => {
-    const matchesSearch = !searchTerm || 
-                         tool.name?.toLowerCase().includes(searchTerm.toLowerCase()) || 
-                         tool.code?.toLowerCase().includes(searchTerm.toLowerCase()) ||
-                         tool.branch?.toLowerCase().includes(searchTerm.toLowerCase());
-    
-    const matchesBranch = selectedBranchIds.length === 0 || selectedBranchIds.includes(tool.branch_id);
-    
+  const hasGlobalSearch = searchTerm.trim().length > 0;
+  const searchSource = hasGlobalSearch ? (globalTools.length > 0 ? globalTools : tools) : tools;
+  const searchLower = searchTerm.trim().toLowerCase();
+  const searchCompact = searchLower.replace(/[^a-z0-9]/g, '');
+  const filteredTools = searchSource.filter(tool => {
+    const codeCompact = String(tool.code || '').toLowerCase().replace(/[^a-z0-9]/g, '');
+    const matchesSearch = !hasGlobalSearch ||
+                         tool.name?.toLowerCase().includes(searchLower) ||
+                         tool.code?.toLowerCase().includes(searchLower) ||
+                         (searchCompact && codeCompact.includes(searchCompact)) ||
+                         tool.branch?.toLowerCase().includes(searchLower) ||
+                         tool.location?.toLowerCase().includes(searchLower);
+
+    // Quando existe termo de busca, a resposta é global por definição. O filtro
+    // de filial continua valendo normalmente quando a busca está vazia.
+    const matchesBranch = hasGlobalSearch || selectedBranchIds.length === 0 || selectedBranchIds.includes(tool.branch_id);
+
     return matchesSearch && matchesBranch;
   });
 
@@ -878,8 +986,13 @@ export default function StockPage() {
             </button>
           )}
           <div className="text-[10px] font-black text-slate-300 tracking-widest uppercase mr-4 hidden lg:block">
-            {filteredTools.length} / {tools.length} itens
+            {filteredTools.length} / {searchSource.length} itens
           </div>
+          {hasGlobalSearch && (
+            <div className="text-[9px] font-black text-indigo-600 bg-indigo-50 border border-indigo-100 px-3 py-2 rounded-lg uppercase tracking-widest whitespace-nowrap">
+              Busca global · todas as filiais
+            </div>
+          )}
           {user?.role === 'Administrador' && (
             <button 
               onClick={async () => {
@@ -995,7 +1108,7 @@ export default function StockPage() {
             </motion.div>
             <p className="font-bold text-slate-400 italic">Sincronizando estoque...</p>
          </div>
-      ) : selectedBranchIds.length === 0 && user?.role !== 'Operador' ? (
+      ) : selectedBranchIds.length === 0 && user?.role !== 'Operador' && !hasGlobalSearch ? (
         <div className="bg-white rounded-3xl border-2 border-dashed border-slate-200 p-16 text-center">
            <div className="w-16 h-16 bg-indigo-50 text-indigo-500 rounded-full flex items-center justify-center mx-auto mb-4">
              <MapPin size={32} />
@@ -1031,7 +1144,11 @@ export default function StockPage() {
               animate={{ opacity: 1, y: 0 }}
               transition={{ delay: i * 0.05 }}
               whileHover={{ y: -8 }}
-              className="bg-white rounded-[2rem] border border-slate-200 shadow-xl group overflow-hidden"
+              onClick={() => {
+                setSelectedTool(tool);
+                setIsFichaModalOpen(true);
+              }}
+              className="bg-white rounded-[2rem] border border-slate-200 shadow-xl group overflow-hidden cursor-pointer"
             >
               <div className="h-48 bg-slate-100 relative overflow-hidden flex items-center justify-center">
                 {(tool.image_urls && tool.image_urls.length > 0) || tool.image_url ? (
@@ -1096,13 +1213,14 @@ export default function StockPage() {
                           className="absolute right-0 top-full mt-2 w-40 bg-white rounded-2xl shadow-2xl border border-slate-100 z-30 overflow-hidden"
                         >
                           <button 
-                            onClick={() => handleEdit(tool)}
+                            onClick={(e) => { e.stopPropagation(); handleEdit(tool); }}
                             className="w-full px-4 py-3 text-left text-[10px] font-black uppercase tracking-widest text-slate-600 hover:bg-indigo-50 hover:text-indigo-600 transition-all flex items-center gap-2"
                           >
                             Editar
                           </button>
                           <button 
-                            onClick={() => {
+                            onClick={(e) => {
+                              e.stopPropagation();
                               setSelectedTool(tool);
                               setIsTransferModalOpen(true);
                               setActiveMenuId(null);
@@ -1112,7 +1230,7 @@ export default function StockPage() {
                             Transferir Filial
                           </button>
                           <button 
-                            onClick={() => handleDeleteClick(tool.id)}
+                            onClick={(e) => { e.stopPropagation(); handleDeleteClick(tool.id); }}
                             className="w-full px-4 py-3 text-left text-[10px] font-black uppercase tracking-widest text-rose-500 hover:bg-rose-50 transition-all flex items-center gap-2"
                           >
                             Excluir
@@ -1141,7 +1259,8 @@ export default function StockPage() {
                 <div className="flex gap-2">
                    {user?.role === 'Administrador' && (
                      <button 
-                      onClick={() => {
+                      onClick={(e) => {
+                        e.stopPropagation();
                         setSelectedTool(tool);
                         setIsAdjustmentModalOpen(true);
                       }}
@@ -1151,7 +1270,8 @@ export default function StockPage() {
                      </button>
                    )}
                    <button 
-                    onClick={() => {
+                    onClick={(e) => {
+                      e.stopPropagation();
                       setSelectedTool(tool);
                       setIsFichaModalOpen(true);
                     }}
@@ -1667,22 +1787,30 @@ export default function StockPage() {
               </div>
 
               <div className="p-10 overflow-y-auto custom-scrollbar">
-                <div className="grid grid-cols-2 sm:grid-cols-4 gap-4 mb-10">
+                <div className="grid grid-cols-2 sm:grid-cols-3 gap-4 mb-10">
                    <div className="p-4 bg-slate-50 rounded-2xl border border-slate-100">
                       <p className="text-[9px] font-black text-slate-400 uppercase tracking-widest mb-1">Cód. Sistema</p>
                       <p className="text-sm font-black text-slate-900 font-mono tracking-widest">{selectedTool.code}</p>
                    </div>
                    <div className="p-4 bg-indigo-50 rounded-2xl border border-indigo-100">
                       <p className="text-[9px] font-black text-indigo-400 uppercase tracking-widest mb-1">Unidade</p>
-                      <p className="text-sm font-black text-indigo-900 italic">{selectedTool.branch}</p>
+                      <p className="text-sm font-black text-indigo-900 italic">{selectedTool.branch || '---'}</p>
+                   </div>
+                   <div className="p-4 bg-slate-50 rounded-2xl border border-slate-100">
+                      <p className="text-[9px] font-black text-slate-400 uppercase tracking-widest mb-1">Locação</p>
+                      <p className="text-sm font-black text-slate-900 font-mono">{selectedTool.location || '---'}</p>
                    </div>
                    <div className="p-4 bg-emerald-50 rounded-2xl border border-emerald-100">
                       <p className="text-[9px] font-black text-emerald-400 uppercase tracking-widest mb-1">Disponível</p>
-                      <p className="text-sm font-black text-emerald-900">{selectedTool.quantity_available}</p>
+                      <p className="text-sm font-black text-emerald-900">{selectedTool.quantity_available || 0}</p>
+                   </div>
+                   <div className="p-4 bg-amber-50 rounded-2xl border border-amber-100">
+                      <p className="text-[9px] font-black text-amber-500 uppercase tracking-widest mb-1">Cautelada</p>
+                      <p className="text-sm font-black text-amber-900">{selectedTool.cautela_quantity || 0}</p>
                    </div>
                    <div className="p-4 bg-rose-50 rounded-2xl border border-rose-100">
-                      <p className="text-[9px] font-black text-rose-400 uppercase tracking-widest mb-1">Ocupado</p>
-                      <p className="text-sm font-black text-rose-900">{(selectedTool.cautela_quantity || 0) + (selectedTool.borrowed_quantity || 0)}</p>
+                      <p className="text-[9px] font-black text-rose-400 uppercase tracking-widest mb-1">Emprestada</p>
+                      <p className="text-sm font-black text-rose-900">{selectedTool.borrowed_quantity || 0}</p>
                    </div>
                 </div>
 
@@ -1720,8 +1848,12 @@ export default function StockPage() {
                                   <HardHat size={18} />
                                 </div>
                                 <div>
-                                  <p className="text-[10px] font-black uppercase text-slate-800 leading-none">{holder.responsible_name}</p>
-                                  <p className="text-[9px] font-bold text-rose-400 uppercase mt-1">{holder.type === 'caution' ? 'Cautela Fixa' : 'Empréstimo'}</p>
+                                  <p className="text-[10px] font-black uppercase text-slate-800 leading-none">{holder.possession_name || holder.responsible_name}</p>
+                                  <p className="text-[9px] font-bold text-rose-400 uppercase mt-1">{holder.raw_type === 'caution' ? 'Cautela' : 'Empréstimo'}</p>
+                                  {holder.possession_name && holder.possession_name !== holder.responsible_name && (
+                                    <p className="text-[8px] font-bold text-slate-400 mt-1">Responsável: {holder.responsible_name}</p>
+                                  )}
+                                  {holder.note && <p className="text-[8px] font-bold text-indigo-500 mt-1">{holder.note}</p>}
                                 </div>
                               </div>
                               <div className="flex items-center gap-3">
@@ -1729,13 +1861,15 @@ export default function StockPage() {
                                   <p className="text-[9px] font-black text-slate-400 uppercase tracking-tighter">Retirado em</p>
                                   <p className="text-[9px] font-bold text-slate-600">{new Date(holder.created_at).toLocaleDateString('pt-BR')}</p>
                                 </div>
-                                <button
-                                  onClick={() => handleReturnFromFicha(holder)}
-                                  disabled={isSyncing}
-                                  className="ml-2 p-2 bg-rose-500 text-white rounded-lg hover:bg-rose-600 transition-all shadow-sm flex items-center justify-center gap-1.5 text-[8px] font-black uppercase tracking-widest px-3"
-                                >
-                                  {isSyncing ? '...' : <><RotateCcw size={12} /> Devolver</>}
-                                </button>
+                                {holder.source === 'cautela' && (!holder.possession_registration || holder.possession_registration === holder.registration) && (
+                                  <button
+                                    onClick={() => handleReturnFromFicha(holder)}
+                                    disabled={isSyncing}
+                                    className="ml-2 p-2 bg-rose-500 text-white rounded-lg hover:bg-rose-600 transition-all shadow-sm flex items-center justify-center gap-1.5 text-[8px] font-black uppercase tracking-widest px-3"
+                                  >
+                                    {isSyncing ? '...' : <><RotateCcw size={12} /> Devolver</>}
+                                  </button>
+                                )}
                               </div>
                             </div>
                           ))}
