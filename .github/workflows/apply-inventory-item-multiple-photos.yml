@@ -1,0 +1,30 @@
+name: Aplicar múltiplas fotos por item no inventário
+
+on:
+  push:
+    branches:
+      - feat/multiplas-fotos-item-inventario
+    paths:
+      - scripts/patch-inventory-item-multiple-photos.py
+
+permissions:
+  contents: write
+
+jobs:
+  patch:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: feat/multiplas-fotos-item-inventario
+      - name: Aplicar patch
+        run: python scripts/patch-inventory-item-multiple-photos.py
+      - name: Validar diff
+        run: git diff --check && git diff -- components/inventory/PhotoInventoryRapid.tsx
+      - name: Commitar componente alterado
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add components/inventory/PhotoInventoryRapid.tsx
+          git commit -m "feat: permitir várias fotos por item no inventário rápido"
+          git push
