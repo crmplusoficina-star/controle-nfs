@@ -504,8 +504,10 @@ export default function PhotoInventoryRapid() {
     const result: Candidate[] = [];
     for (const ai of found) {
       const match = catalogMatch(ai);
-      const name = match?.name || String(ai.name || '').trim();
-      if (!name) continue;
+      const detectedName = String(ai.name || '').trim();
+      if (!match && !detectedName) continue;
+      const uncertain = !match && normalize(detectedName).includes('ferramenta nao identificada');
+      const name = uncertain ? '' : (match?.name || detectedName);
       const code = match?.code || String(ai.code || '').trim();
       const bbox = safeBox(ai.bbox);
       let cropPreview: string | null = null;
@@ -517,7 +519,6 @@ export default function PhotoInventoryRapid() {
         }
       }
       const confidence = typeof ai.confidence === 'number' ? ai.confidence : null;
-      const uncertain = normalize(name).includes('ferramenta nao identificada');
       const existsInBranch = Boolean(code && catalog.some(tool =>
         tool.branch_id === branchRef.current?.id && normalizeCode(tool.code) === normalizeCode(code)
       ));
@@ -536,8 +537,8 @@ export default function PhotoInventoryRapid() {
         bbox,
         cropPreview,
         included: true,
-        reviewState: auto ? 'auto' : 'review',
-        manual: false,
+        reviewState: auto ? 'auto' : uncertain ? 'manual' : 'review',
+        manual: uncertain,
       });
     }
     return result;
@@ -718,7 +719,7 @@ export default function PhotoInventoryRapid() {
       addManualItem(closeup);
     } catch {
       addManualItem(null);
-      setMessage('Não consegui preparar a foto aproximada, mas o item manual foi criado e pode ser preenchido.');
+      setMessage('Não consegui preparar a foto aproximada, mas o item manual foi criado e pode ser salvo sem nome.');
     }
   };
 
@@ -760,10 +761,13 @@ export default function PhotoInventoryRapid() {
   };
 
   const resolveIdentity = (item: Candidate) => {
-    if (item.code.trim()) return { name: item.name.trim(), code: item.code.trim() };
-    const match = findSafeToolNameMatch(item.name, prioritizedCatalog());
-    if (match) return { name: match.name, code: match.code };
-    return { name: item.name.trim(), code: generatedCode() };
+    const typedName = item.name.trim();
+    if (item.code.trim()) return { name: typedName, code: item.code.trim() };
+    if (typedName) {
+      const match = findSafeToolNameMatch(typedName, prioritizedCatalog());
+      if (match) return { name: match.name, code: match.code };
+    }
+    return { name: typedName, code: generatedCode() };
   };
 
   const expectedAtLocation = useMemo(() => {
@@ -772,7 +776,7 @@ export default function PhotoInventoryRapid() {
     return catalog.filter(tool => tool.branch_id === branch.id && normalize(tool.location) === loc);
   }, [catalog, branch, location]);
 
-  const includedItems = useMemo(() => items.filter(item => item.included && item.name.trim()), [items]);
+  const includedItems = useMemo(() => items.filter(item => item.included), [items]);
   const missingExpected = useMemo(() => expectedAtLocation.filter(tool =>
     !includedItems.some(item => candidateMatchesTool(item, tool))
   ), [expectedAtLocation, includedItems]);
@@ -790,12 +794,6 @@ export default function PhotoInventoryRapid() {
   const save = async () => {
     if (!branch || !user) return;
     const selected = itemsRef.current.filter(item => item.included);
-    const incomplete = selected.filter(item => !item.name.trim());
-    if (incomplete.length) {
-      setExpanded(current => new Set([...current, ...incomplete.map(item => item.id)]));
-      setMessage('Há item manual selecionado sem nome. Preencha o nome ou desmarque esse item antes de salvar.');
-      return;
-    }
     if (!selected.length) {
       setMessage('Nenhum item selecionado para salvar.');
       return;
@@ -833,10 +831,11 @@ export default function PhotoInventoryRapid() {
             ? existing.image_urls.filter(Boolean)
             : existing.image_url ? [existing.image_url] : [];
           const finalUrls = cropUrl ? Array.from(new Set([cropUrl, ...oldUrls])) : oldUrls;
+          const currentAvailable = Math.max(0, Number(existing.quantity_available) || 0);
           const { error } = await supabase.from('tools').update({
             name: identity.name,
             brand: item.brand.trim() || existing.brand || null,
-            quantity_available: quantity,
+            quantity_available: Math.max(currentAvailable, quantity),
             location: location.trim().toUpperCase(),
             image_url: cropUrl || existing.image_url || null,
             image_urls: finalUrls,
@@ -899,7 +898,10 @@ export default function PhotoInventoryRapid() {
                 </div>
                 <button onClick={() => copyBranchLink(item)} className="p-3 rounded-xl bg-slate-50 text-slate-500" title="Copiar link da filial">{copied === `branch:${item.id}` ? <CheckCircle2 size={18} /> : <Copy size={18} />}</button>
               </div>
-              <button onClick={() => selectBranch(item)} className="w-full mt-5 py-4 rounded-2xl bg-slate-900 hover:bg-indigo-600 text-white transition-all font-black uppercase tracking-widest text-xs flex items-center justify-center gap-2"><Link2 size={16} /> Abrir inventário</button>
+              <div className="grid grid-cols-1 sm:grid-cols-2 gap-2 mt-5">
+                <button onClick={() => selectBranch(item)} className="w-full py-4 rounded-2xl bg-slate-900 hover:bg-indigo-600 text-white transition-all font-black uppercase tracking-widest text-xs flex items-center justify-center gap-2"><Link2 size={16} /> Abrir inventário</button>
+                <a href={`/dashboard/inventory/adjustments?branch=${item.id}`} className="w-full py-4 rounded-2xl bg-slate-100 hover:bg-indigo-50 text-slate-700 hover:text-indigo-700 transition-all font-black uppercase tracking-widest text-xs flex items-center justify-center gap-2"><Package size={16} /> Ver / ajustar</a>
+              </div>
             </div>
           ))}
         </div>
@@ -919,10 +921,11 @@ export default function PhotoInventoryRapid() {
             <div className="rounded-2xl bg-indigo-50 p-4"><p className="text-2xl font-black text-indigo-700">{saved.updated}</p><p className="text-[9px] font-black uppercase text-indigo-600">Atualizadas</p></div>
             <div className="rounded-2xl bg-amber-50 p-4"><p className="text-2xl font-black text-amber-700">{saved.missing}</p><p className="text-[9px] font-black uppercase text-amber-600">Não vistas</p></div>
           </div>
-          <p className="mt-4 text-xs font-bold text-slate-400">Itens não vistos são apenas sinalizados; o sistema não zera saldo automaticamente.</p>
-          <div className="flex flex-col sm:flex-row gap-3 mt-8">
-            <button onClick={nextLocation} className="flex-1 py-4 rounded-2xl bg-indigo-600 text-white font-black uppercase text-xs tracking-widest flex items-center justify-center gap-2"><RefreshCw size={17} /> Próxima locação</button>
-            <button onClick={leaveBranch} className="flex-1 py-4 rounded-2xl bg-slate-100 text-slate-700 font-black uppercase text-xs tracking-widest">Trocar filial</button>
+          <p className="mt-4 text-xs font-bold text-slate-400">Itens sem nome são salvos com código automático e ficam disponíveis na tela de ajustes manuais. Itens não vistos não reduzem saldo automaticamente.</p>
+          <div className="grid grid-cols-1 sm:grid-cols-3 gap-3 mt-8">
+            <button onClick={nextLocation} className="py-4 rounded-2xl bg-indigo-600 text-white font-black uppercase text-xs tracking-widest flex items-center justify-center gap-2"><RefreshCw size={17} /> Próxima locação</button>
+            <a href={`/dashboard/inventory/adjustments?branch=${branch.id}`} className="py-4 rounded-2xl bg-slate-900 text-white font-black uppercase text-xs tracking-widest flex items-center justify-center gap-2"><Package size={17} /> Ver / ajustar</a>
+            <button onClick={leaveBranch} className="py-4 rounded-2xl bg-slate-100 text-slate-700 font-black uppercase text-xs tracking-widest">Trocar filial</button>
           </div>
         </div>
       </div>
@@ -937,7 +940,10 @@ export default function PhotoInventoryRapid() {
           <div className="flex items-center gap-3"><h1 className="text-3xl font-black italic uppercase tracking-tighter text-slate-900">{branch.name}</h1><span className="px-2.5 py-1 rounded-full bg-indigo-50 text-indigo-700 text-[9px] font-black uppercase tracking-widest">Rápido</span></div>
           <p className="text-sm font-bold text-slate-500 mt-1">Fotografe e continue andando. A fila da IA trabalha sem bloquear a câmera.</p>
         </div>
-        <button onClick={() => setQuickMode(value => !value)} className={`px-4 py-3 rounded-xl font-black uppercase text-xs flex items-center gap-2 self-start ${quickMode ? 'bg-indigo-600 text-white' : 'bg-white border border-slate-200 text-slate-600'}`}><Zap size={16} /> {quickMode ? 'Automático ligado' : 'Automático desligado'}</button>
+        <div className="flex flex-wrap gap-2 self-start">
+          <a href={`/dashboard/inventory/adjustments?branch=${branch.id}`} className="px-4 py-3 rounded-xl font-black uppercase text-xs flex items-center gap-2 bg-slate-900 text-white"><Package size={16} /> Ver / ajustar</a>
+          <button onClick={() => setQuickMode(value => !value)} className={`px-4 py-3 rounded-xl font-black uppercase text-xs flex items-center gap-2 ${quickMode ? 'bg-indigo-600 text-white' : 'bg-white border border-slate-200 text-slate-600'}`}><Zap size={16} /> {quickMode ? 'Automático ligado' : 'Automático desligado'}</button>
+        </div>
       </div>
 
       <section className="bg-white border border-slate-100 shadow-sm rounded-[2rem] p-5 md:p-7">
@@ -990,7 +996,7 @@ export default function PhotoInventoryRapid() {
         </div>
 
         {queueNote && <div className="mt-3 rounded-xl bg-indigo-50 text-indigo-700 px-4 py-3 text-xs font-bold flex items-center gap-2"><Clock3 size={15} /> {queueNote}</div>}
-        {unrecognizedCount > 0 && <div className="mt-3 rounded-xl bg-slate-50 text-slate-600 px-4 py-3 text-xs font-bold">{unrecognizedCount} foto(s) sem item de estoque reconhecido. Isso é normal para fotos de pessoas/objetos pessoais. Se havia uma ferramenta real, use “Ferramenta não reconhecida” e tire uma foto aproximada.</div>}
+        {unrecognizedCount > 0 && <div className="mt-3 rounded-xl bg-slate-50 text-slate-600 px-4 py-3 text-xs font-bold">{unrecognizedCount} foto(s) sem item de estoque reconhecido. Se havia uma ferramenta real, use “Ferramenta não reconhecida”: ela pode ser salva com nome em branco e código automático para ajuste depois.</div>}
         {errorCount > 0 && <div className="mt-3 rounded-xl bg-rose-50 text-rose-700 px-4 py-3 text-xs font-bold">{errorCount} foto(s) falharam, mas a fila e a câmera continuam funcionando. Você pode tentar somente essas fotos novamente.</div>}
         {(rateInfo?.remainingTokens || rateInfo?.remainingRequests) && (
           <p className="mt-3 text-[10px] font-bold text-slate-400">{rateInfo.remainingTokens ? `Capacidade: ${rateInfo.remainingTokens}${rateInfo.limitTokens ? `/${rateInfo.limitTokens}` : ''} tokens${rateInfo.resetTokens ? ` • renova em ${rateInfo.resetTokens}` : ''}` : ''}{rateInfo.remainingTokens && rateInfo.remainingRequests ? ' • ' : ''}{rateInfo.remainingRequests ? `${rateInfo.remainingRequests} req. diárias` : ''}</p>
@@ -1021,7 +1027,7 @@ export default function PhotoInventoryRapid() {
                         {item.reviewState === 'auto' ? <span className="px-2 py-1 rounded-md bg-emerald-50 text-emerald-700 text-[8px] font-black uppercase">OK automático</span> : item.reviewState === 'manual' ? <span className="px-2 py-1 rounded-md bg-amber-50 text-amber-700 text-[8px] font-black uppercase">Manual</span> : <span className="px-2 py-1 rounded-md bg-amber-50 text-amber-700 text-[8px] font-black uppercase">Revisar</span>}
                         {item.matchedCatalog && <span className="px-2 py-1 rounded-md bg-indigo-50 text-indigo-700 text-[8px] font-black uppercase">Cadastro encontrado</span>}
                       </div>
-                      <p className={`font-black text-sm sm:text-base truncate ${item.name ? 'text-slate-900' : 'text-amber-700'}`}>{item.name || 'Preencher nome da ferramenta'}</p>
+                      <p className={`font-black text-sm sm:text-base truncate ${item.name ? 'text-slate-900' : 'text-amber-700'}`}>{item.name || 'Sem nome — ajustar depois'}</p>
                       <p className="text-[10px] font-bold text-slate-400 truncate">{item.code || 'Código automático'} • Qtd {item.quantity} • {item.location || location}</p>
                     </div>
                     <button onClick={() => setExpanded(current => { const next = new Set(current); if (next.has(item.id)) next.delete(item.id); else next.add(item.id); return next; })} className="p-2 text-slate-400">{isExpanded ? <ChevronUp size={20} /> : <ChevronDown size={20} />}</button>
@@ -1030,11 +1036,12 @@ export default function PhotoInventoryRapid() {
                   {isExpanded && (
                     <div className="border-t border-slate-100 p-4 sm:p-5 bg-slate-50/50">
                       <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-5 gap-3">
-                        <label className="lg:col-span-2"><span className="block mb-1.5 text-[9px] font-black uppercase tracking-widest text-slate-400">Ferramenta</span><input value={item.name} onChange={event => updateItem(item.id, { name: event.target.value, matchedCatalog: false, reviewState: item.manual ? 'manual' : 'review' })} className="w-full px-4 py-3 rounded-xl bg-white outline-none focus:ring-2 focus:ring-indigo-400 font-black text-sm" /></label>
+                        <label className="lg:col-span-2"><span className="block mb-1.5 text-[9px] font-black uppercase tracking-widest text-slate-400">Ferramenta</span><input value={item.name} onChange={event => updateItem(item.id, { name: event.target.value, matchedCatalog: false, reviewState: item.manual ? 'manual' : 'review' })} placeholder="Pode deixar em branco" className="w-full px-4 py-3 rounded-xl bg-white outline-none focus:ring-2 focus:ring-indigo-400 font-black text-sm" /></label>
                         <label><span className="block mb-1.5 text-[9px] font-black uppercase tracking-widest text-slate-400">Código</span><input value={item.code} onChange={event => updateItem(item.id, { code: event.target.value, matchedCatalog: false, reviewState: item.manual ? 'manual' : 'review' })} placeholder="Automático" className="w-full px-4 py-3 rounded-xl bg-white outline-none focus:ring-2 focus:ring-indigo-400 font-mono text-sm" /></label>
                         <label><span className="block mb-1.5 text-[9px] font-black uppercase tracking-widest text-slate-400">Marca</span><input value={item.brand} onChange={event => updateItem(item.id, { brand: event.target.value })} className="w-full px-4 py-3 rounded-xl bg-white outline-none focus:ring-2 focus:ring-indigo-400 font-bold text-sm" /></label>
                         <label><span className="block mb-1.5 text-[9px] font-black uppercase tracking-widest text-slate-400">Quantidade</span><input type="number" min={1} value={item.quantity} onChange={event => updateItem(item.id, { quantity: Math.max(1, Number(event.target.value) || 1) })} className="w-full px-4 py-3 rounded-xl bg-indigo-50 outline-none focus:ring-2 focus:ring-indigo-400 font-black text-indigo-700 text-sm" /></label>
                       </div>
+                      <p className="mt-2 text-[10px] font-bold text-slate-400">Se não souber o nome agora, deixe em branco. O item será salvo pelo código automático, foto, filial e locação.</p>
                       <div className="flex flex-wrap gap-2 mt-3">
                         <button onClick={() => applyCatalogSuggestion(item.id)} disabled={!item.name.trim()} className="px-3 py-2 rounded-lg bg-indigo-50 text-indigo-700 disabled:opacity-40 font-black uppercase text-[9px] flex items-center gap-1.5"><Search size={13} /> Procurar no cadastro</button>
                         <button onClick={() => setItemsSynced(current => current.filter(candidate => candidate.id !== item.id))} className="px-3 py-2 rounded-lg bg-rose-50 text-rose-700 font-black uppercase text-[9px] flex items-center gap-1.5"><Trash2 size={13} /> Remover</button>
@@ -1057,14 +1064,14 @@ export default function PhotoInventoryRapid() {
             <div className="rounded-2xl bg-emerald-50 p-4 text-center"><p className="text-2xl font-black text-emerald-700">{includedItems.length}</p><p className="text-[8px] font-black uppercase text-emerald-600">Encontrados</p></div>
             <div className="rounded-2xl bg-amber-50 p-4 text-center"><p className="text-2xl font-black text-amber-700">{missingExpected.length}</p><p className="text-[8px] font-black uppercase text-amber-600">Não vistos</p></div>
           </div>
-          {missingExpected.length > 0 && <div className="mt-4 rounded-2xl bg-amber-50 border border-amber-100 p-4"><p className="text-xs font-black text-amber-800 uppercase">Não apareceram nas fotos</p><div className="mt-2 space-y-1">{missingExpected.slice(0, 8).map(tool => <p key={tool.id} className="text-xs font-bold text-amber-700">• {tool.name} <span className="font-mono opacity-70">{tool.code}</span></p>)}{missingExpected.length > 8 && <p className="text-xs font-bold text-amber-600">+ {missingExpected.length - 8} outros</p>}</div></div>}
+          {missingExpected.length > 0 && <div className="mt-4 rounded-2xl bg-amber-50 border border-amber-100 p-4"><p className="text-xs font-black text-amber-800 uppercase">Não apareceram nas fotos</p><div className="mt-2 space-y-1">{missingExpected.slice(0, 8).map(tool => <p key={tool.id} className="text-xs font-bold text-amber-700">• {tool.name || 'Sem nome'} <span className="font-mono opacity-70">{tool.code}</span></p>)}{missingExpected.length > 8 && <p className="text-xs font-bold text-amber-600">+ {missingExpected.length - 8} outros</p>}</div></div>}
           {unexpectedItems.length > 0 && <div className="mt-3 rounded-2xl bg-indigo-50 border border-indigo-100 p-4"><p className="text-xs font-black text-indigo-800 uppercase">Novos ou em locação diferente</p><p className="text-xs font-bold text-indigo-700 mt-1">{unexpectedItems.length} item(ns) identificado(s) que não estavam cadastrados em {location}.</p></div>}
-          <p className="mt-3 text-[10px] font-bold text-slate-400">Segurança: “não visto” não altera saldo sozinho. Serve apenas como alerta para você conferir.</p>
+          <p className="mt-3 text-[10px] font-bold text-slate-400">Segurança: “não visto” não altera saldo sozinho e a foto nunca reduz saldo existente. Reduções podem ser feitas apenas na tela de ajustes manuais.</p>
         </section>
       )}
 
       <div className="sticky bottom-3 z-20 bg-white/95 backdrop-blur border border-slate-200 shadow-xl rounded-2xl p-3 flex flex-col sm:flex-row gap-2">
-        <div className="flex-1 px-2 py-1"><p className="text-xs font-black text-slate-800">{includedItems.length} item(ns) selecionado(s)</p><p className="text-[9px] font-bold text-slate-400">{queueActive ? 'A fila ainda está processando; você pode salvar depois ou continuar fotografando.' : 'Fila concluída.'}</p></div>
+        <div className="flex-1 px-2 py-1"><p className="text-xs font-black text-slate-800">{includedItems.length} item(ns) selecionado(s)</p><p className="text-[9px] font-bold text-slate-400">{queueActive ? 'A fila ainda está processando; você pode salvar depois ou continuar fotografando.' : 'Fila concluída. Itens sem nome também podem ser salvos.'}</p></div>
         <button onClick={save} disabled={saving || items.filter(item => item.included).length === 0} className="px-6 py-4 bg-emerald-600 hover:bg-emerald-500 disabled:opacity-40 text-white rounded-xl font-black uppercase tracking-widest text-xs flex items-center justify-center gap-2">{saving ? <><Loader2 size={18} className="animate-spin" /> Salvando</> : <><Save size={18} /> Salvar locação</>}</button>
       </div>
     </div>
