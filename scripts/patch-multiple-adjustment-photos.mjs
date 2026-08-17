@@ -133,10 +133,10 @@ const newPhotoBlock = `                  <div className="space-y-2 w-full lg:w-[
                     </button>
 
                     {photoUrls.length > 1 && (
-                      <div className="grid grid-cols-5 lg:grid-cols-4 gap-1.5" aria-label={`${photoUrls.length} fotos cadastradas`}>
+                      <div className="grid grid-cols-5 lg:grid-cols-4 gap-1.5" aria-label={photoUrls.length + ' fotos cadastradas'}>
                         {photoUrls.slice(0, 8).map((url, index) => (
-                          <div key={`${url}-${index}`} className="relative h-11 lg:h-8 rounded-lg overflow-hidden border border-slate-200 bg-slate-50">
-                            <Image src={url} alt={`Foto ${index + 1}`} fill unoptimized className="object-cover" />
+                          <div key={url + '-' + index} className="relative h-11 lg:h-8 rounded-lg overflow-hidden border border-slate-200 bg-slate-50">
+                            <Image src={url} alt={'Foto ' + (index + 1)} fill unoptimized className="object-cover" />
                           </div>
                         ))}
                       </div>
