@@ -25,7 +25,7 @@ jobs:
       - name: Aplicar patch
         run: node scripts/patch-multiple-adjustment-photos.mjs
       - name: Validar build
-        run: npm ci && npm run build
+        run: npm install --no-audit --no-fund && npm run build
       - name: Commitar página alterada
         run: |
           if git diff --quiet -- app/dashboard/inventory/adjustments/page.tsx; then
