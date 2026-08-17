@@ -275,10 +275,14 @@ export default function InventoryAdjustmentsPage() {
   }, [tools, drafts, filter, query, sortMode]);
 
   const updateDraft = (toolId: string, patch: Partial<Draft>) => {
-    setDrafts(current => ({
-      ...current,
-      [toolId]: { ...(current[toolId] || makeDraft(tools.find(item => item.id === toolId)!)), ...patch },
-    }));
+    setDrafts(current => {
+      const next = {
+        ...current,
+        [toolId]: { ...(current[toolId] || makeDraft(tools.find(item => item.id === toolId)!)), ...patch },
+      };
+      draftsRef.current = next;
+      return next;
+    });
     setSuccessId('');
   };
 
@@ -319,18 +323,28 @@ export default function InventoryAdjustmentsPage() {
   const applyCatalogTemplate = async (tool: Tool, template: Tool, adoptCode = false) => {
     if (!template || template.id === tool.id) return;
     const currentDraft = draftsRef.current[tool.id] || makeDraft(tool);
+    const sameBranchConflict = catalogRef.current.some(item =>
+      item.id !== tool.id && item.branch_id === tool.branch_id && normalizeCode(item.code) === normalizeCode(template.code)
+    );
+    if (adoptCode && sameBranchConflict) return;
+
     const currentName = currentDraft.name.trim();
     const pendingName = !currentName || normalize(currentName).includes('ferramenta nao identificada');
-    const nextName = pendingName ? String(template.name || '').trim() : currentDraft.name;
-    const nextBrand = currentDraft.brand.trim() || String(template.brand || '').trim();
+    const nameEditedManually = currentDraft.name !== (tool.name || '');
+    const brandEditedManually = currentDraft.brand !== (tool.brand || '');
+    const templateName = String(template.name || '').trim();
+    const templateBrand = String(template.brand || '').trim();
+    const nextName = !nameEditedManually && templateName && (adoptCode || pendingName)
+      ? templateName
+      : currentDraft.name;
+    const nextBrand = !brandEditedManually && templateBrand
+      ? templateBrand
+      : currentDraft.brand;
     const localPhotos = toolPhotos(tool);
     const referencePhotos = toolPhotos(template);
     const imageUrls = Array.from(new Set([...localPhotos, ...referencePhotos]));
     const primaryPhoto = tool.image_url || imageUrls[0] || null;
-    const sameBranchConflict = catalogRef.current.some(item =>
-      item.id !== tool.id && item.branch_id === tool.branch_id && normalizeCode(item.code) === normalizeCode(template.code)
-    );
-    const canAdoptCode = adoptCode && !sameBranchConflict && Boolean(template.code) && (
+    const canAdoptCode = adoptCode && Boolean(template.code) && (
       !currentDraft.code.trim()
       || normalize(currentDraft.code).startsWith('gen-')
       || normalizeCode(currentDraft.code) === normalizeCode(template.code)
