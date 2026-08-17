@@ -6,6 +6,7 @@ on:
       - feat/multiplas-fotos-item-inventario
     paths:
       - scripts/patch-inventory-item-multiple-photos.py
+      - .github/workflows/apply-inventory-item-multiple-photos.yml
 
 permissions:
   contents: write
