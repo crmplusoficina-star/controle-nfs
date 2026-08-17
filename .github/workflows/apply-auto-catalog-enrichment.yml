@@ -1,11 +1,11 @@
-name: Aplicar PROCX automático do inventário
+name: Refinar PROCX automático do inventário
 
 on:
   push:
     branches:
       - feat/procx-automatico-inventario
     paths:
-      - scripts/patch-auto-catalog-enrichment.py
+      - scripts/refine-auto-catalog-enrichment.py
       - .github/workflows/apply-auto-catalog-enrichment.yml
 
 permissions:
@@ -18,14 +18,14 @@ jobs:
       - uses: actions/checkout@v4
         with:
           ref: feat/procx-automatico-inventario
-      - name: Aplicar patch
-        run: python scripts/patch-auto-catalog-enrichment.py
+      - name: Aplicar refinamento
+        run: python scripts/refine-auto-catalog-enrichment.py
       - name: Validar diff
         run: git diff --check && git diff -- app/dashboard/inventory/adjustments/page.tsx
-      - name: Commitar página alterada
+      - name: Commitar página refinada
         run: |
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
           git add app/dashboard/inventory/adjustments/page.tsx
-          git commit -m "feat: preencher ferramenta automaticamente pelo catálogo global"
+          git commit -m "fix: preservar edição manual no preenchimento automático"
           git push
