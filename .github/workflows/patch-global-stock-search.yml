@@ -6,7 +6,7 @@ on:
       - feat/busca-global-estoque
     paths:
       - .github/workflows/patch-global-stock-search.yml
-      - scripts/patch-global-stock-search.mjs
+      - scripts/fix-global-stock-guards.mjs
 
 permissions:
   contents: write
@@ -22,8 +22,8 @@ jobs:
       - uses: actions/setup-node@v4
         with:
           node-version: 20
-      - name: Aplicar patch
-        run: node scripts/patch-global-stock-search.mjs
+      - name: Aplicar guardas finais
+        run: node scripts/fix-global-stock-guards.mjs
       - name: Commitar página alterada
         run: |
           if git diff --quiet -- app/dashboard/stock/page.tsx; then
@@ -33,5 +33,5 @@ jobs:
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
           git add app/dashboard/stock/page.tsx
-          git commit -m "feat: busca global de ferramentas por código"
+          git commit -m "fix: proteger ações na consulta global de estoque"
           git push origin HEAD:feat/busca-global-estoque
