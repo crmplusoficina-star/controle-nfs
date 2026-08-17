@@ -1219,7 +1219,8 @@ export default function StockPage() {
                             Editar
                           </button>
                           <button 
-                            onClick={() => {
+                            onClick={(e) => {
+                              e.stopPropagation();
                               setSelectedTool(tool);
                               setIsTransferModalOpen(true);
                               setActiveMenuId(null);
@@ -1860,7 +1861,7 @@ export default function StockPage() {
                                   <p className="text-[9px] font-black text-slate-400 uppercase tracking-tighter">Retirado em</p>
                                   <p className="text-[9px] font-bold text-slate-600">{new Date(holder.created_at).toLocaleDateString('pt-BR')}</p>
                                 </div>
-                                {holder.source === 'cautela' && (
+                                {holder.source === 'cautela' && (!holder.possession_registration || holder.possession_registration === holder.registration) && (
                                   <button
                                     onClick={() => handleReturnFromFicha(holder)}
                                     disabled={isSyncing}
