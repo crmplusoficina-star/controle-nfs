@@ -10,6 +10,7 @@ import {
   Filter,
   ImageIcon,
   Loader2,
+  Pencil,
   MapPin,
   Package,
   RefreshCw,
@@ -17,10 +18,11 @@ import {
   Search,
   SlidersHorizontal,
   Tag,
+  Trash2,
 } from 'lucide-react';
 import { supabase } from '@/lib/supabase';
 import { useAuth } from '@/lib/auth-context';
-import { uploadFile } from '@/lib/storage';
+import { deleteFile, uploadFile } from '@/lib/storage';
 
 type Branch = {
   id: string;
@@ -103,6 +105,8 @@ export default function InventoryAdjustmentsPage() {
   const [savingId, setSavingId] = useState('');
   const [uploadingPhotoId, setUploadingPhotoId] = useState('');
   const [photoTargetId, setPhotoTargetId] = useState('');
+  const [replacePhotoUrl, setReplacePhotoUrl] = useState('');
+  const [deletingPhotoId, setDeletingPhotoId] = useState('');
   const [message, setMessage] = useState('');
   const [successId, setSuccessId] = useState('');
   const cameraInputRef = useRef<HTMLInputElement>(null);
@@ -217,17 +221,20 @@ export default function InventoryAdjustmentsPage() {
       || draft.quantity_available !== Math.max(0, Number(tool.quantity_available) || 0);
   };
 
-  const openCamera = (toolId: string) => {
-    if (uploadingPhotoId) return;
+  const openCamera = (toolId: string, photoUrl = '') => {
+    if (uploadingPhotoId || deletingPhotoId) return;
     setPhotoTargetId(toolId);
+    setReplacePhotoUrl(photoUrl);
     setMessage('');
+    if (cameraInputRef.current) cameraInputRef.current.value = '';
     cameraInputRef.current?.click();
   };
 
   const savePhotos = async (files: FileList | File[] | null | undefined) => {
     const toolId = photoTargetId;
     const tool = tools.find(item => item.id === toolId);
-    const selectedFiles = Array.from(files || []).filter(file => file.type.startsWith('image/'));
+    const allSelected = Array.from(files || []).filter(file => file.type.startsWith('image/'));
+    const selectedFiles = replacePhotoUrl ? allSelected.slice(0, 1) : allSelected;
     if (!selectedFiles.length || !tool) return;
 
     setUploadingPhotoId(toolId);
@@ -240,8 +247,13 @@ export default function InventoryAdjustmentsPage() {
       if (!uploadedUrls.length) throw new Error('O upload das fotos não retornou nenhuma URL.');
 
       const oldUrls = toolPhotos(tool);
-      const imageUrls = Array.from(new Set([...oldUrls, ...uploadedUrls]));
-      const primaryPhoto = uploadedUrls[0] || oldUrls[0] || null;
+      const replacing = Boolean(replacePhotoUrl);
+      const imageUrls = replacing
+        ? oldUrls.map(url => url === replacePhotoUrl ? uploadedUrls[0] : url)
+        : Array.from(new Set([...oldUrls, ...uploadedUrls]));
+      const primaryPhoto = replacing
+        ? (tool.image_url === replacePhotoUrl ? uploadedUrls[0] : (tool.image_url || imageUrls[0] || null))
+        : (uploadedUrls[0] || oldUrls[0] || null);
       const updatedAt = new Date().toISOString();
       const { error } = await supabase.from('tools').update({
         image_url: primaryPhoto,
@@ -253,15 +265,58 @@ export default function InventoryAdjustmentsPage() {
       setTools(current => current.map(item => item.id === tool.id
         ? { ...item, image_url: primaryPhoto, image_urls: imageUrls, updated_at: updatedAt }
         : item));
+
+      if (replacing && replacePhotoUrl && replacePhotoUrl !== uploadedUrls[0]) {
+        const deleted = await deleteFile(replacePhotoUrl);
+        if (!deleted) console.warn('A foto antiga saiu do cadastro, mas não foi possível removê-la do storage.');
+      }
+
       setSuccessId(tool.id);
       window.setTimeout(() => setSuccessId(current => current === tool.id ? '' : current), 1800);
     } catch (error) {
       console.error(error);
-      setMessage(error instanceof Error ? error.message : 'Não foi possível salvar as novas fotos.');
+      setMessage(error instanceof Error ? error.message : 'Não foi possível salvar as fotos.');
     } finally {
       setUploadingPhotoId('');
       setPhotoTargetId('');
+      setReplacePhotoUrl('');
       if (cameraInputRef.current) cameraInputRef.current.value = '';
+    }
+  };
+
+  const removePhoto = async (tool: Tool, photoUrl: string) => {
+    if (!photoUrl || uploadingPhotoId || deletingPhotoId) return;
+    if (!window.confirm('Excluir esta foto da ferramenta? O código, saldo e histórico serão preservados.')) return;
+
+    setDeletingPhotoId(tool.id);
+    setMessage('');
+    try {
+      const remaining = toolPhotos(tool).filter(url => url !== photoUrl);
+      const primaryPhoto = tool.image_url === photoUrl || !tool.image_url
+        ? remaining[0] || null
+        : tool.image_url;
+      const updatedAt = new Date().toISOString();
+      const { error } = await supabase.from('tools').update({
+        image_url: primaryPhoto,
+        image_urls: remaining,
+        updated_at: updatedAt,
+      }).eq('id', tool.id);
+      if (error) throw error;
+
+      setTools(current => current.map(item => item.id === tool.id
+        ? { ...item, image_url: primaryPhoto, image_urls: remaining, updated_at: updatedAt }
+        : item));
+
+      const deleted = await deleteFile(photoUrl);
+      if (!deleted) console.warn('A foto foi removida do cadastro, mas o arquivo não pôde ser apagado do storage.');
+
+      setSuccessId(tool.id);
+      window.setTimeout(() => setSuccessId(current => current === tool.id ? '' : current), 1800);
+    } catch (error) {
+      console.error(error);
+      setMessage(error instanceof Error ? error.message : 'Não foi possível excluir a foto.');
+    } finally {
+      setDeletingPhotoId('');
     }
   };
 
@@ -313,7 +368,7 @@ export default function InventoryAdjustmentsPage() {
         type="file"
         accept="image/*"
         capture="environment"
-        multiple
+        multiple={!replacePhotoUrl}
         className="hidden"
         onChange={event => void savePhotos(event.target.files)}
       />
@@ -367,7 +422,7 @@ export default function InventoryAdjustmentsPage() {
           </div>
         </div>
 
-        <p className="text-[10px] font-bold text-slate-400">Toque na foto para abrir a câmera quantas vezes precisar. Todas as fotos ficam vinculadas ao mesmo item; código, saldo e histórico não são recriados. Em aparelhos compatíveis, também é possível selecionar várias imagens de uma vez.</p>
+        <p className="text-[10px] font-bold text-slate-400">Use “Adicionar foto” para incluir novas imagens. Em cada foto você pode trocar ou excluir individualmente; código, saldo e histórico da ferramenta são preservados.</p>
       </section>
 
       {message && <div className="p-4 rounded-2xl bg-amber-50 border border-amber-200 text-amber-800 font-bold text-sm flex gap-3"><AlertTriangle size={20} className="shrink-0" />{message}</div>}
@@ -387,34 +442,82 @@ export default function InventoryAdjustmentsPage() {
             const dirty = hasChanges(tool);
             const saving = savingId === tool.id;
             const uploadingPhoto = uploadingPhotoId === tool.id;
+            const deletingPhoto = deletingPhotoId === tool.id;
+            const photoBusy = uploadingPhoto || deletingPhoto;
             const saved = successId === tool.id;
             return (
               <article key={tool.id} className={`bg-white border rounded-3xl shadow-sm overflow-hidden ${!draft.name.trim() ? 'border-amber-200' : 'border-slate-100'}`}>
-                <div className="p-4 md:p-5 grid grid-cols-1 lg:grid-cols-[110px_1fr_auto] gap-4 items-start">
-                  <div className="space-y-2 w-full lg:w-[110px]">
-                    <button
-                      type="button"
-                      onClick={() => openCamera(tool.id)}
-                      disabled={Boolean(uploadingPhotoId)}
-                      className="group relative w-full h-36 lg:h-[110px] rounded-2xl overflow-hidden bg-slate-50 border border-slate-100 focus:outline-none focus:ring-2 focus:ring-indigo-400"
-                      title={photo ? 'Adicionar outra foto desta ferramenta' : 'Tirar foto desta ferramenta'}
-                    >
+                <div className="p-4 md:p-5 grid grid-cols-1 lg:grid-cols-[190px_1fr_auto] gap-4 items-start">
+                  <div className="space-y-2 w-full lg:w-[190px]">
+                    <div className="relative w-full h-40 lg:h-[140px] rounded-2xl overflow-hidden bg-slate-50 border border-slate-100">
                       {photo ? <Image src={photo} alt={draft.name || draft.code || 'Ferramenta'} fill unoptimized className="object-contain" /> : <div className="w-full h-full flex items-center justify-center"><ImageIcon size={30} className="text-slate-300" /></div>}
                       {photoUrls.length > 0 && (
                         <span className="absolute top-2 right-2 rounded-lg bg-white/95 px-2 py-1 text-[8px] font-black text-indigo-700 shadow-sm">
                           {photoUrls.length} {photoUrls.length === 1 ? 'foto' : 'fotos'}
                         </span>
                       )}
-                      <span className="absolute inset-x-2 bottom-2 rounded-xl bg-slate-950/85 text-white py-2 px-2 flex items-center justify-center gap-1.5 text-[9px] font-black uppercase tracking-wider">
-                        {uploadingPhoto ? <><Loader2 size={13} className="animate-spin" /> Salvando</> : <><Camera size={13} /> {photo ? 'Adicionar foto' : 'Tirar foto'}</>}
-                      </span>
-                    </button>
+
+                      {photo && (
+                        <div className="absolute top-2 left-2 flex gap-1.5">
+                          <button
+                            type="button"
+                            onClick={() => openCamera(tool.id, photo)}
+                            disabled={photoBusy}
+                            className="rounded-lg bg-white/95 px-2 py-1.5 text-[8px] font-black uppercase text-slate-700 shadow-sm flex items-center gap-1 disabled:opacity-50"
+                            title="Trocar foto principal"
+                          >
+                            <Pencil size={11} /> Trocar
+                          </button>
+                          <button
+                            type="button"
+                            onClick={() => void removePhoto(tool, photo)}
+                            disabled={photoBusy}
+                            className="rounded-lg bg-rose-600/95 px-2 py-1.5 text-[8px] font-black uppercase text-white shadow-sm flex items-center gap-1 disabled:opacity-50"
+                            title="Excluir foto principal"
+                          >
+                            {deletingPhoto ? <Loader2 size={11} className="animate-spin" /> : <Trash2 size={11} />} Excluir
+                          </button>
+                        </div>
+                      )}
+
+                      <button
+                        type="button"
+                        onClick={() => openCamera(tool.id)}
+                        disabled={photoBusy}
+                        className="absolute inset-x-2 bottom-2 rounded-xl bg-slate-950/90 text-white py-2 px-2 flex items-center justify-center gap-1.5 text-[9px] font-black uppercase tracking-wider disabled:opacity-60"
+                      >
+                        {uploadingPhoto && !replacePhotoUrl ? <Loader2 size={13} className="animate-spin" /> : <Camera size={13} />}
+                        {uploadingPhoto && !replacePhotoUrl ? 'Salvando' : 'Adicionar foto'}
+                      </button>
+                    </div>
 
                     {photoUrls.length > 1 && (
-                      <div className="grid grid-cols-5 lg:grid-cols-4 gap-1.5" aria-label={photoUrls.length + ' fotos cadastradas'}>
-                        {photoUrls.slice(0, 8).map((url, index) => (
-                          <div key={url + '-' + index} className="relative h-11 lg:h-8 rounded-lg overflow-hidden border border-slate-200 bg-slate-50">
-                            <Image src={url} alt={'Foto ' + (index + 1)} fill unoptimized className="object-cover" />
+                      <div className="grid grid-cols-3 gap-2" aria-label={photoUrls.length + ' fotos cadastradas'}>
+                        {photoUrls.slice(1, 10).map((url, index) => (
+                          <div key={url + '-' + index} className="relative h-16 rounded-xl overflow-hidden border border-slate-200 bg-slate-50">
+                            <Image src={url} alt={'Foto ' + (index + 2)} fill unoptimized className="object-cover" />
+                            <div className="absolute inset-x-1 bottom-1 flex gap-1">
+                              <button
+                                type="button"
+                                onClick={() => openCamera(tool.id, url)}
+                                disabled={photoBusy}
+                                className="h-6 flex-1 rounded-md bg-white/95 text-slate-700 flex items-center justify-center shadow-sm disabled:opacity-50"
+                                title="Trocar esta foto"
+                                aria-label="Trocar esta foto"
+                              >
+                                <Pencil size={11} />
+                              </button>
+                              <button
+                                type="button"
+                                onClick={() => void removePhoto(tool, url)}
+                                disabled={photoBusy}
+                                className="h-6 flex-1 rounded-md bg-rose-600/95 text-white flex items-center justify-center shadow-sm disabled:opacity-50"
+                                title="Excluir esta foto"
+                                aria-label="Excluir esta foto"
+                              >
+                                <Trash2 size={11} />
+                              </button>
+                            </div>
                           </div>
                         ))}
                       </div>
