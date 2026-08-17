@@ -1,0 +1,31 @@
+name: Corrigir foto e identidade do inventário rápido
+
+on:
+  push:
+    branches:
+      - fix/inventario-fotos-identidade-apply
+    paths:
+      - scripts/fix-inventory-photo-identity.py
+      - .github/workflows/apply-inventory-photo-identity-fix.yml
+
+permissions:
+  contents: write
+
+jobs:
+  patch:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: fix/inventario-fotos-identidade-apply
+      - name: Aplicar correção
+        run: python scripts/fix-inventory-photo-identity.py
+      - name: Validar diff
+        run: git diff --check && git diff -- components/inventory/PhotoInventoryRapid.tsx
+      - name: Commitar componente alterado
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add components/inventory/PhotoInventoryRapid.tsx
+          git commit -m "fix: isolar identidade e exibir foto inteira no inventário"
+          git push
