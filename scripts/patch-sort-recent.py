@@ -1,5 +1,6 @@
 from pathlib import Path
 
+# Trigger the workflow after its definition exists on the branch.
 path = Path('app/dashboard/inventory/adjustments/page.tsx')
 source = path.read_text()
 
