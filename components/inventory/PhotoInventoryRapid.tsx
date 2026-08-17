@@ -447,16 +447,28 @@ export default function PhotoInventoryRapid() {
   const catalogMatch = (ai: AiItem) => {
     const ordered = prioritizedCatalog();
     const code = normalizeCode(ai.catalogCode || ai.code);
+
+    // Código visível é identidade rígida. Se a IA leu um código, nunca usamos
+    // semelhança de nome para trocar por outro cadastro.
     if (code) {
-      const exactCode = ordered.find(tool => normalizeCode(tool.code) === code);
-      if (exactCode) return exactCode;
+      const exactCode = ordered.filter(tool => normalizeCode(tool.code) === code);
+      const identities = new Set(exactCode.map(tool => `${normalizeCode(tool.code)}|${normalize(tool.name)}`));
+      if (exactCode.length && identities.size === 1) return exactCode[0];
+      return null;
     }
+
     const detectedName = String(ai.name || '').trim();
     if (!detectedName || normalize(detectedName).includes('ferramenta nao identificada')) return null;
+
     const exact = ordered.filter(tool => normalize(tool.name) === normalize(detectedName));
-    const codes = new Set(exact.map(tool => normalizeCode(tool.code)).filter(Boolean));
-    if (exact.length && codes.size === 1) return exact[0];
-    return findSafeToolNameMatch(detectedName, ordered);
+    const exactCodes = new Set(exact.map(tool => normalizeCode(tool.code)).filter(Boolean));
+    if (exact.length && exactCodes.size === 1) return exact[0];
+
+    // Sem código só aceitamos fuzzy quando ele aponta para uma única identidade.
+    const fuzzy = ordered.filter(tool => Boolean(findSafeToolNameMatch(detectedName, [tool])));
+    const fuzzyCodes = new Set(fuzzy.map(tool => normalizeCode(tool.code)).filter(Boolean));
+    if (fuzzy.length && fuzzyCodes.size === 1) return fuzzy[0];
+    return null;
   };
 
   const candidateMatchesTool = (candidate: Candidate, tool: Tool) => {
@@ -467,33 +479,38 @@ export default function PhotoInventoryRapid() {
 
   const mergeCandidates = (current: Candidate[], incoming: Candidate[]) => {
     const next = [...current];
+
     for (const candidate of incoming) {
-      let index = -1;
-      if (candidate.code) {
-        index = next.findIndex(item => item.code && normalizeCode(item.code) === normalizeCode(candidate.code));
-      }
-      if (index < 0 && candidate.name && !normalize(candidate.name).includes('ferramenta nao identificada')) {
-        const compatible = next.filter(item => item.name && compatibleNumbers(candidate.name, item.name));
-        const semantic = findSafeToolNameMatch(candidate.name, compatible);
-        if (semantic) index = next.findIndex(item => item.id === semantic.id);
-      }
+      // Uma nova foto da fila representa uma nova leitura. Nunca misturamos
+      // ferramenta A com ferramenta B só porque os nomes são parecidos.
+      // Dedupe só é permitido dentro da MESMA foto de origem.
+      let index = next.findIndex(item => {
+        if (!item.sourcePhotoId || !candidate.sourcePhotoId || item.sourcePhotoId !== candidate.sourcePhotoId) return false;
+
+        const itemCode = normalizeCode(item.code);
+        const candidateCode = normalizeCode(candidate.code);
+        if (itemCode || candidateCode) return Boolean(itemCode && candidateCode && itemCode === candidateCode);
+
+        // Para itens sem código, só eliminamos detecção duplicada quando as caixas
+        // praticamente cobrem o mesmo objeto na mesma imagem.
+        return boxIoU(item.bbox, candidate.bbox) >= 0.7;
+      });
+
       if (index < 0) {
         next.push(candidate);
         continue;
       }
 
       const previous = next[index];
-      const samePhotoDistinctObjects = previous.sourcePhotoId && candidate.sourcePhotoId &&
-        previous.sourcePhotoId === candidate.sourcePhotoId && boxIoU(previous.bbox, candidate.bbox) < 0.15;
       const useIncomingCrop = Boolean(candidate.cropPreview) && (!previous.cropPreview || (candidate.confidence || 0) > (previous.confidence || 0));
       next[index] = {
         ...previous,
-        name: previous.matchedCatalog ? previous.name : candidate.name || previous.name,
+        // Depois que uma leitura cria o item, outra detecção da mesma foto não
+        // pode trocar silenciosamente nome/código por outra ferramenta.
+        name: previous.name || candidate.name,
         code: previous.code || candidate.code,
         brand: previous.brand || candidate.brand,
-        quantity: samePhotoDistinctObjects
-          ? previous.quantity + candidate.quantity
-          : Math.max(previous.quantity, candidate.quantity),
+        quantity: Math.max(previous.quantity, candidate.quantity),
         confidence: Math.max(previous.confidence || 0, candidate.confidence || 0),
         matchedCatalog: previous.matchedCatalog || candidate.matchedCatalog,
         existsInBranch: previous.existsInBranch || candidate.existsInBranch,
@@ -505,6 +522,7 @@ export default function PhotoInventoryRapid() {
         cropPreview: useIncomingCrop ? candidate.cropPreview : previous.cropPreview,
       };
     }
+
     return next;
   };
 
@@ -1021,7 +1039,7 @@ export default function PhotoInventoryRapid() {
           <div className="grid grid-cols-2 sm:grid-cols-3 md:grid-cols-5 gap-3">
             {photos.map((photo, index) => (
               <div key={photo.id} className="relative aspect-square rounded-2xl overflow-hidden bg-slate-100 border border-slate-100">
-                <Image src={photo.preview} alt={`Foto ${index + 1}`} fill unoptimized className="object-cover" />
+                <Image src={photo.preview} alt={`Foto ${index + 1}`} fill unoptimized className="object-contain bg-slate-950" />
                 <span className={`absolute top-2 left-2 px-2 py-1 rounded-lg text-[9px] font-black ${statusClass(photo.status)}`}>{photo.status === 'processing' ? <span className="flex items-center gap-1"><Loader2 size={10} className="animate-spin" /> {statusLabel(photo.status)}</span> : statusLabel(photo.status)}</span>
                 <button onClick={() => removePhoto(photo.id)} className="absolute top-2 right-2 p-2 bg-black/60 text-white rounded-lg"><Trash2 size={13} /></button>
                 {(photo.status === 'error' || photo.status === 'unrecognized') && (
@@ -1097,7 +1115,7 @@ export default function PhotoInventoryRapid() {
                           <div className="grid grid-cols-3 sm:grid-cols-5 gap-2 mt-3">
                             {item.extraPhotos.map((photo, photoIndex) => (
                               <div key={photo.id} className="relative aspect-square rounded-xl overflow-hidden bg-slate-100 border border-slate-200">
-                                <Image src={photo.preview} alt={`Foto complementar ${photoIndex + 1}`} fill unoptimized className="object-cover" />
+                                <Image src={photo.preview} alt={`Foto complementar ${photoIndex + 1}`} fill unoptimized className="object-contain bg-slate-950" />
                                 <button type="button" onClick={() => removeItemPhoto(item.id, photo.id)} className="absolute top-1.5 right-1.5 p-1.5 rounded-lg bg-black/65 text-white" aria-label="Remover foto complementar"><Trash2 size={12} /></button>
                               </div>
                             ))}
