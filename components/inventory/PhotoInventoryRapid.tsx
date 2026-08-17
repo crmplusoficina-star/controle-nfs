@@ -59,6 +59,11 @@ type Photo = {
   attempts: number;
   error?: string;
 };
+type ItemPhoto = {
+  id: string;
+  file: File;
+  preview: string;
+};
 type ReviewState = 'auto' | 'review' | 'manual';
 type Candidate = {
   id: string;
@@ -73,6 +78,7 @@ type Candidate = {
   sourcePhotoId: string | null;
   bbox: BoundingBox | null;
   cropPreview: string | null;
+  extraPhotos: ItemPhoto[];
   included: boolean;
   reviewState: ReviewState;
   manual: boolean;
@@ -313,6 +319,7 @@ export default function PhotoInventoryRapid() {
   useEffect(() => { locationRef.current = location; }, [location]);
   useEffect(() => () => {
     photosRef.current.forEach(photo => URL.revokeObjectURL(photo.preview));
+    itemsRef.current.forEach(item => item.extraPhotos.forEach(photo => URL.revokeObjectURL(photo.preview)));
     retryTimersRef.current.forEach(timer => window.clearTimeout(timer));
   }, []);
 
@@ -370,6 +377,7 @@ export default function PhotoInventoryRapid() {
 
   const clearSession = (clearLocation = true) => {
     photosRef.current.forEach(photo => URL.revokeObjectURL(photo.preview));
+    itemsRef.current.forEach(item => item.extraPhotos.forEach(photo => URL.revokeObjectURL(photo.preview)));
     setPhotosSynced(() => []);
     setItemsSynced(() => []);
     setExpanded(new Set());
@@ -536,6 +544,7 @@ export default function PhotoInventoryRapid() {
         sourcePhotoId: photo.id,
         bbox,
         cropPreview,
+        extraPhotos: [],
         included: true,
         reviewState: auto ? 'auto' : uncertain ? 'manual' : 'review',
         manual: uncertain,
@@ -700,6 +709,7 @@ export default function PhotoInventoryRapid() {
     sourcePhotoId: null,
     bbox: null,
     cropPreview,
+    extraPhotos: [],
     included: true,
     reviewState: 'manual',
     manual: true,
@@ -721,6 +731,33 @@ export default function PhotoInventoryRapid() {
       addManualItem(null);
       setMessage('Não consegui preparar a foto aproximada, mas o item manual foi criado e pode ser salvo sem nome.');
     }
+  };
+
+  const addItemPhotos = (id: string, files: FileList | null) => {
+    if (!files) return;
+    const additions = Array.from(files)
+      .filter(file => file.type.startsWith('image/'))
+      .map(file => ({ id: uid(), file, preview: URL.createObjectURL(file) }));
+    if (!additions.length) return;
+    setItemsSynced(current => current.map(item => item.id === id
+      ? { ...item, extraPhotos: [...item.extraPhotos, ...additions] }
+      : item));
+    setSaved(null);
+  };
+
+  const removeItemPhoto = (itemId: string, photoId: string) => {
+    const item = itemsRef.current.find(candidate => candidate.id === itemId);
+    const target = item?.extraPhotos.find(photo => photo.id === photoId);
+    if (target) URL.revokeObjectURL(target.preview);
+    setItemsSynced(current => current.map(candidate => candidate.id === itemId
+      ? { ...candidate, extraPhotos: candidate.extraPhotos.filter(photo => photo.id !== photoId) }
+      : candidate));
+  };
+
+  const removeItem = (id: string) => {
+    const item = itemsRef.current.find(candidate => candidate.id === id);
+    item?.extraPhotos.forEach(photo => URL.revokeObjectURL(photo.preview));
+    setItemsSynced(current => current.filter(candidate => candidate.id !== id));
   };
 
   const updateItem = (id: string, patch: Partial<Candidate>) => {
@@ -810,13 +847,20 @@ export default function PhotoInventoryRapid() {
         const identity = resolveIdentity(item);
         const quantity = Math.max(1, Math.round(Number(item.quantity) || 1));
         let cropUrl: string | null = null;
+        const safeName = normalize(identity.name).replace(/\s+/g, '-').slice(0, 50) || 'item';
         if (item.cropPreview) {
-          const safeName = normalize(identity.name).replace(/\s+/g, '-').slice(0, 50) || 'item';
           cropUrl = await uploadFile(
             dataUrlToFile(item.cropPreview, `${safeName}-${Date.now()}.jpg`),
             'ferramentas/inventario/recortes',
           );
         }
+        const extraUrls = (await Promise.all(
+          item.extraPhotos.map((photo, photoIndex) => uploadFile(
+            photo.file,
+            `ferramentas/inventario/itens/${safeName}-${photoIndex + 1}`,
+          )),
+        )).filter((url): url is string => Boolean(url));
+        const capturedUrls = Array.from(new Set([cropUrl, ...extraUrls].filter(Boolean) as string[]));
 
         const { data: existing, error: findError } = await supabase
           .from('tools')
@@ -830,14 +874,14 @@ export default function PhotoInventoryRapid() {
           const oldUrls = Array.isArray(existing.image_urls)
             ? existing.image_urls.filter(Boolean)
             : existing.image_url ? [existing.image_url] : [];
-          const finalUrls = cropUrl ? Array.from(new Set([cropUrl, ...oldUrls])) : oldUrls;
+          const finalUrls = capturedUrls.length ? Array.from(new Set([...capturedUrls, ...oldUrls])) : oldUrls;
           const currentAvailable = Math.max(0, Number(existing.quantity_available) || 0);
           const { error } = await supabase.from('tools').update({
             name: identity.name,
             brand: item.brand.trim() || existing.brand || null,
             quantity_available: Math.max(currentAvailable, quantity),
             location: location.trim().toUpperCase(),
-            image_url: cropUrl || existing.image_url || null,
+            image_url: capturedUrls[0] || existing.image_url || null,
             image_urls: finalUrls,
             updated_at: new Date().toISOString(),
           }).eq('id', existing.id);
@@ -855,8 +899,8 @@ export default function PhotoInventoryRapid() {
             borrowed_quantity: 0,
             status: 'disponivel',
             location: location.trim().toUpperCase(),
-            image_url: cropUrl,
-            image_urls: cropUrl ? [cropUrl] : [],
+            image_url: capturedUrls[0] || null,
+            image_urls: capturedUrls,
           });
           if (error) throw error;
           created += 1;
@@ -1041,10 +1085,29 @@ export default function PhotoInventoryRapid() {
                         <label><span className="block mb-1.5 text-[9px] font-black uppercase tracking-widest text-slate-400">Marca</span><input value={item.brand} onChange={event => updateItem(item.id, { brand: event.target.value })} className="w-full px-4 py-3 rounded-xl bg-white outline-none focus:ring-2 focus:ring-indigo-400 font-bold text-sm" /></label>
                         <label><span className="block mb-1.5 text-[9px] font-black uppercase tracking-widest text-slate-400">Quantidade</span><input type="number" min={1} value={item.quantity} onChange={event => updateItem(item.id, { quantity: Math.max(1, Number(event.target.value) || 1) })} className="w-full px-4 py-3 rounded-xl bg-indigo-50 outline-none focus:ring-2 focus:ring-indigo-400 font-black text-indigo-700 text-sm" /></label>
                       </div>
-                      <p className="mt-2 text-[10px] font-bold text-slate-400">Se não souber o nome agora, deixe em branco. O item será salvo pelo código automático, foto, filial e locação.</p>
+                      <div className="mt-4 rounded-2xl bg-white border border-slate-200 p-3">
+                        <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-2">
+                          <div><p className="text-[9px] font-black uppercase tracking-widest text-slate-500">Fotos deste item</p><p className="mt-1 text-[10px] font-bold text-slate-400">O recorte da IA fica como principal. Adicione quantas fotos complementares precisar antes de salvar.</p></div>
+                          <div className="flex gap-2">
+                            <label className="px-3 py-2 rounded-lg bg-slate-900 text-white font-black uppercase text-[9px] flex items-center gap-1.5 cursor-pointer"><Camera size={13} /> Câmera<input type="file" accept="image/*" capture="environment" className="hidden" onChange={event => { addItemPhotos(item.id, event.target.files); event.currentTarget.value = ''; }} /></label>
+                            <label className="px-3 py-2 rounded-lg bg-indigo-50 text-indigo-700 font-black uppercase text-[9px] flex items-center gap-1.5 cursor-pointer"><Images size={13} /> Galeria<input type="file" accept="image/*" multiple className="hidden" onChange={event => { addItemPhotos(item.id, event.target.files); event.currentTarget.value = ''; }} /></label>
+                          </div>
+                        </div>
+                        {item.extraPhotos.length > 0 && (
+                          <div className="grid grid-cols-3 sm:grid-cols-5 gap-2 mt-3">
+                            {item.extraPhotos.map((photo, photoIndex) => (
+                              <div key={photo.id} className="relative aspect-square rounded-xl overflow-hidden bg-slate-100 border border-slate-200">
+                                <Image src={photo.preview} alt={`Foto complementar ${photoIndex + 1}`} fill unoptimized className="object-cover" />
+                                <button type="button" onClick={() => removeItemPhoto(item.id, photo.id)} className="absolute top-1.5 right-1.5 p-1.5 rounded-lg bg-black/65 text-white" aria-label="Remover foto complementar"><Trash2 size={12} /></button>
+                              </div>
+                            ))}
+                          </div>
+                        )}
+                      </div>
+                      <p className="mt-2 text-[10px] font-bold text-slate-400">Se não souber o nome agora, deixe em branco. O item será salvo pelo código automático, fotos, filial e locação.</p>
                       <div className="flex flex-wrap gap-2 mt-3">
                         <button onClick={() => applyCatalogSuggestion(item.id)} disabled={!item.name.trim()} className="px-3 py-2 rounded-lg bg-indigo-50 text-indigo-700 disabled:opacity-40 font-black uppercase text-[9px] flex items-center gap-1.5"><Search size={13} /> Procurar no cadastro</button>
-                        <button onClick={() => setItemsSynced(current => current.filter(candidate => candidate.id !== item.id))} className="px-3 py-2 rounded-lg bg-rose-50 text-rose-700 font-black uppercase text-[9px] flex items-center gap-1.5"><Trash2 size={13} /> Remover</button>
+                        <button onClick={() => removeItem(item.id)} className="px-3 py-2 rounded-lg bg-rose-50 text-rose-700 font-black uppercase text-[9px] flex items-center gap-1.5"><Trash2 size={13} /> Remover</button>
                         {item.confidence !== null && <span className="px-3 py-2 rounded-lg bg-white text-slate-500 font-black uppercase text-[9px]">IA {Math.round(item.confidence * 100)}%</span>}
                       </div>
                     </div>
