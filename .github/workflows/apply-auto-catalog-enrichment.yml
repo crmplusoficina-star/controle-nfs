@@ -6,6 +6,7 @@ on:
       - feat/procx-automatico-inventario
     paths:
       - scripts/patch-auto-catalog-enrichment.py
+      - .github/workflows/apply-auto-catalog-enrichment.yml
 
 permissions:
   contents: write
