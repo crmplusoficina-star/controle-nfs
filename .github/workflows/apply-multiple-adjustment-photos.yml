@@ -1,0 +1,39 @@
+name: Aplicar múltiplas fotos nos ajustes
+
+on:
+  push:
+    branches:
+      - feat/multiplas-fotos-ajustes
+    paths:
+      - .github/workflows/apply-multiple-adjustment-photos.yml
+      - scripts/patch-multiple-adjustment-photos.mjs
+
+permissions:
+  contents: write
+
+jobs:
+  patch:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: feat/multiplas-fotos-ajustes
+          fetch-depth: 0
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+      - name: Aplicar patch
+        run: node scripts/patch-multiple-adjustment-photos.mjs
+      - name: Validar build
+        run: npm ci && npm run build
+      - name: Commitar página alterada
+        run: |
+          if git diff --quiet -- app/dashboard/inventory/adjustments/page.tsx; then
+            echo "Nenhuma alteração pendente."
+            exit 0
+          fi
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add app/dashboard/inventory/adjustments/page.tsx
+          git commit -m "feat: permitir múltiplas fotos nos ajustes de inventário"
+          git push origin HEAD:feat/multiplas-fotos-ajustes
