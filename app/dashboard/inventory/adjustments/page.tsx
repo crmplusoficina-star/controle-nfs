@@ -1,10 +1,11 @@
 'use client';
 
 import Image from 'next/image';
-import { useEffect, useMemo, useState } from 'react';
+import { useEffect, useMemo, useRef, useState } from 'react';
 import {
   AlertTriangle,
   ArrowLeft,
+  Camera,
   CheckCircle2,
   Filter,
   ImageIcon,
@@ -19,6 +20,7 @@ import {
 } from 'lucide-react';
 import { supabase } from '@/lib/supabase';
 import { useAuth } from '@/lib/auth-context';
+import { uploadFile } from '@/lib/storage';
 
 type Branch = {
   id: string;
@@ -62,14 +64,15 @@ function normalize(value?: string | null) {
     .trim();
 }
 
-function photoFromInventory(tool: Tool) {
-  const urls = [tool.image_url, ...(Array.isArray(tool.image_urls) ? tool.image_urls : [])].filter(Boolean) as string[];
-  return urls.some(url => normalize(url).includes('ferramentas/inventario/'));
-}
-
 function mainPhoto(tool: Tool) {
   if (tool.image_url) return tool.image_url;
   return Array.isArray(tool.image_urls) ? tool.image_urls.find(Boolean) || null : null;
+}
+
+function photoFromInventory(tool: Tool) {
+  const urls = [tool.image_url, ...(Array.isArray(tool.image_urls) ? tool.image_urls : [])].filter(Boolean) as string[];
+  if (urls.some(url => normalize(url).includes('ferramentas/inventario/'))) return true;
+  return normalize(tool.code).startsWith('gen-') && Boolean(mainPhoto(tool));
 }
 
 function makeDraft(tool: Tool): Draft {
@@ -92,8 +95,11 @@ export default function InventoryAdjustmentsPage() {
   const [filter, setFilter] = useState<FilterMode>('all');
   const [loading, setLoading] = useState(true);
   const [savingId, setSavingId] = useState('');
+  const [uploadingPhotoId, setUploadingPhotoId] = useState('');
+  const [photoTargetId, setPhotoTargetId] = useState('');
   const [message, setMessage] = useState('');
   const [successId, setSuccessId] = useState('');
+  const cameraInputRef = useRef<HTMLInputElement>(null);
 
   useEffect(() => {
     const loadBranches = async () => {
@@ -205,6 +211,50 @@ export default function InventoryAdjustmentsPage() {
       || draft.quantity_available !== Math.max(0, Number(tool.quantity_available) || 0);
   };
 
+  const openCamera = (toolId: string) => {
+    if (uploadingPhotoId) return;
+    setPhotoTargetId(toolId);
+    setMessage('');
+    cameraInputRef.current?.click();
+  };
+
+  const savePhoto = async (file: File | undefined) => {
+    const toolId = photoTargetId;
+    const tool = tools.find(item => item.id === toolId);
+    if (!file || !tool) return;
+
+    setUploadingPhotoId(toolId);
+    setMessage('');
+    try {
+      const photoUrl = await uploadFile(file, 'ferramentas/inventario/ajustes');
+      if (!photoUrl) throw new Error('O upload da foto não retornou uma URL.');
+
+      const oldUrls = [tool.image_url, ...(Array.isArray(tool.image_urls) ? tool.image_urls : [])]
+        .filter(Boolean) as string[];
+      const imageUrls = Array.from(new Set([photoUrl, ...oldUrls]));
+      const updatedAt = new Date().toISOString();
+      const { error } = await supabase.from('tools').update({
+        image_url: photoUrl,
+        image_urls: imageUrls,
+        updated_at: updatedAt,
+      }).eq('id', tool.id);
+      if (error) throw error;
+
+      setTools(current => current.map(item => item.id === tool.id
+        ? { ...item, image_url: photoUrl, image_urls: imageUrls, updated_at: updatedAt }
+        : item));
+      setSuccessId(tool.id);
+      window.setTimeout(() => setSuccessId(current => current === tool.id ? '' : current), 1800);
+    } catch (error) {
+      console.error(error);
+      setMessage(error instanceof Error ? error.message : 'Não foi possível salvar a nova foto.');
+    } finally {
+      setUploadingPhotoId('');
+      setPhotoTargetId('');
+      if (cameraInputRef.current) cameraInputRef.current.value = '';
+    }
+  };
+
   const saveTool = async (tool: Tool) => {
     const draft = drafts[tool.id] || makeDraft(tool);
     const code = draft.code.trim().toUpperCase();
@@ -248,6 +298,15 @@ export default function InventoryAdjustmentsPage() {
 
   return (
     <div className="max-w-7xl mx-auto px-4 md:px-6 py-7 pb-24 space-y-5">
+      <input
+        ref={cameraInputRef}
+        type="file"
+        accept="image/*"
+        capture="environment"
+        className="hidden"
+        onChange={event => void savePhoto(event.target.files?.[0])}
+      />
+
       <div className="flex flex-col lg:flex-row lg:items-end justify-between gap-4">
         <div>
           <a href={branchId ? `/dashboard/inventory?branch=${branchId}` : '/dashboard/inventory'} className="mb-3 text-xs font-black uppercase tracking-widest text-slate-400 hover:text-indigo-600 flex items-center gap-2"><ArrowLeft size={15} /> Voltar ao inventário por fotos</a>
@@ -255,7 +314,7 @@ export default function InventoryAdjustmentsPage() {
             <div className="w-11 h-11 rounded-2xl bg-indigo-50 text-indigo-600 flex items-center justify-center"><SlidersHorizontal size={22} /></div>
             <div>
               <h1 className="text-3xl font-black italic uppercase tracking-tighter text-slate-900">Ajustes manuais</h1>
-              <p className="text-sm font-bold text-slate-500 mt-1">Veja o que entrou no estoque e complete nome, código, marca, locação ou saldo.</p>
+              <p className="text-sm font-bold text-slate-500 mt-1">Veja o que entrou no estoque, fotografe a ferramenta e complete nome, código, marca, locação ou saldo.</p>
             </div>
           </div>
         </div>
@@ -297,7 +356,7 @@ export default function InventoryAdjustmentsPage() {
           </div>
         </div>
 
-        <p className="text-[10px] font-bold text-slate-400">O nome pode ficar em branco. Registros sem nome continuam sendo ferramentas normais do estoque pelo código, filial e locação.</p>
+        <p className="text-[10px] font-bold text-slate-400">Toque na foto da ferramenta para abrir a câmera. A nova foto fica vinculada ao mesmo item; código, saldo e histórico não são recriados.</p>
       </section>
 
       {message && <div className="p-4 rounded-2xl bg-amber-50 border border-amber-200 text-amber-800 font-bold text-sm flex gap-3"><AlertTriangle size={20} className="shrink-0" />{message}</div>}
@@ -315,13 +374,23 @@ export default function InventoryAdjustmentsPage() {
             const photo = mainPhoto(tool);
             const dirty = hasChanges(tool);
             const saving = savingId === tool.id;
+            const uploadingPhoto = uploadingPhotoId === tool.id;
             const saved = successId === tool.id;
             return (
               <article key={tool.id} className={`bg-white border rounded-3xl shadow-sm overflow-hidden ${!draft.name.trim() ? 'border-amber-200' : 'border-slate-100'}`}>
                 <div className="p-4 md:p-5 grid grid-cols-1 lg:grid-cols-[110px_1fr_auto] gap-4 items-start">
-                  <div className="relative w-full lg:w-[110px] h-36 lg:h-[110px] rounded-2xl overflow-hidden bg-slate-50 border border-slate-100">
+                  <button
+                    type="button"
+                    onClick={() => openCamera(tool.id)}
+                    disabled={Boolean(uploadingPhotoId)}
+                    className="group relative w-full lg:w-[110px] h-36 lg:h-[110px] rounded-2xl overflow-hidden bg-slate-50 border border-slate-100 focus:outline-none focus:ring-2 focus:ring-indigo-400"
+                    title="Tirar foto desta ferramenta"
+                  >
                     {photo ? <Image src={photo} alt={draft.name || draft.code || 'Ferramenta'} fill unoptimized className="object-contain" /> : <div className="w-full h-full flex items-center justify-center"><ImageIcon size={30} className="text-slate-300" /></div>}
-                  </div>
+                    <span className="absolute inset-x-2 bottom-2 rounded-xl bg-slate-950/85 text-white py-2 px-2 flex items-center justify-center gap-1.5 text-[9px] font-black uppercase tracking-wider">
+                      {uploadingPhoto ? <><Loader2 size={13} className="animate-spin" /> Salvando</> : <><Camera size={13} /> Tirar foto</>}
+                    </span>
+                  </button>
 
                   <div className="space-y-3 min-w-0">
                     <div className="flex flex-wrap items-center gap-2">
