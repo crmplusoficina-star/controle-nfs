@@ -57,6 +57,7 @@ type Draft = {
 };
 
 type FilterMode = 'photos' | 'unnamed' | 'generated' | 'all';
+type SortMode = 'pending' | 'recent';
 
 function normalize(value?: string | null) {
   return (value || '')
@@ -101,6 +102,7 @@ export default function InventoryAdjustmentsPage() {
   const [drafts, setDrafts] = useState<Record<string, Draft>>({});
   const [query, setQuery] = useState('');
   const [filter, setFilter] = useState<FilterMode>('all');
+  const [sortMode, setSortMode] = useState<SortMode>('pending');
   const [loading, setLoading] = useState(true);
   const [savingId, setSavingId] = useState('');
   const [uploadingPhotoId, setUploadingPhotoId] = useState('');
@@ -192,7 +194,7 @@ export default function InventoryAdjustmentsPage() {
 
   const visibleTools = useMemo(() => {
     const needle = normalize(query);
-    return tools.filter(tool => {
+    const filtered = tools.filter(tool => {
       const draft = drafts[tool.id] || makeDraft(tool);
       if (filter === 'photos' && !photoFromInventory(tool)) return false;
       if (filter === 'unnamed' && draft.name.trim()) return false;
@@ -201,7 +203,19 @@ export default function InventoryAdjustmentsPage() {
       return [draft.name, draft.code, draft.brand, draft.location]
         .some(value => normalize(value).includes(needle));
     });
-  }, [tools, drafts, filter, query]);
+
+    return [...filtered].sort((a, b) => {
+      const modified = String(b.updated_at || b.created_at || '').localeCompare(String(a.updated_at || a.created_at || ''));
+      if (sortMode === 'recent') return modified;
+
+      const draftA = drafts[a.id] || makeDraft(a);
+      const draftB = drafts[b.id] || makeDraft(b);
+      const pendingA = draftA.name.trim() ? 1 : 0;
+      const pendingB = draftB.name.trim() ? 1 : 0;
+      if (pendingA !== pendingB) return pendingA - pendingB;
+      return modified;
+    });
+  }, [tools, drafts, filter, query, sortMode]);
 
   const updateDraft = (toolId: string, patch: Partial<Draft>) => {
     setDrafts(current => ({
@@ -410,7 +424,17 @@ export default function InventoryAdjustmentsPage() {
             <Search size={17} className="absolute left-4 top-1/2 -translate-y-1/2 text-slate-400" />
             <input value={query} onChange={event => setQuery(event.target.value)} placeholder="Buscar por nome, código, marca ou locação" className="w-full pl-11 pr-4 py-3.5 rounded-xl bg-slate-50 outline-none focus:ring-2 focus:ring-indigo-400 font-bold text-sm" />
           </div>
-          <div className="flex flex-wrap gap-2">
+          <div className="flex flex-wrap gap-2 items-center">
+            <select
+              value={sortMode}
+              onChange={event => setSortMode(event.target.value as SortMode)}
+              className="px-3 py-2.5 rounded-xl bg-slate-900 text-white font-black uppercase text-[9px] outline-none focus:ring-2 focus:ring-indigo-400"
+              aria-label="Classificar ferramentas"
+              title="Classificar ferramentas"
+            >
+              <option value="pending">Classificação: pendências primeiro</option>
+              <option value="recent">Classificação: últimos modificados</option>
+            </select>
             {([
               ['photos', `Das fotos (${photoCount})`],
               ['unnamed', `Sem nome (${unnamedCount})`],
@@ -422,7 +446,7 @@ export default function InventoryAdjustmentsPage() {
           </div>
         </div>
 
-        <p className="text-[10px] font-bold text-slate-400">Use “Adicionar foto” para incluir novas imagens. Em cada foto você pode trocar ou excluir individualmente; código, saldo e histórico da ferramenta são preservados.</p>
+        <p className="text-[10px] font-bold text-slate-400">Use “Adicionar foto” para incluir novas imagens. Em “Classificação”, escolha “Últimos modificados” para ver primeiro tudo que foi alterado recentemente. Em cada foto você pode trocar ou excluir individualmente; código, saldo e histórico da ferramenta são preservados.</p>
       </section>
 
       {message && <div className="p-4 rounded-2xl bg-amber-50 border border-amber-200 text-amber-800 font-bold text-sm flex gap-3"><AlertTriangle size={20} className="shrink-0" />{message}</div>}
