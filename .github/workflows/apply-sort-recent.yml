@@ -1,0 +1,30 @@
+name: Aplicar classificação últimos modificados
+
+on:
+  push:
+    branches:
+      - feat/classificacao-ultimos-modificados
+    paths:
+      - scripts/patch-sort-recent.py
+
+permissions:
+  contents: write
+
+jobs:
+  patch:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: feat/classificacao-ultimos-modificados
+      - name: Aplicar patch
+        run: python scripts/patch-sort-recent.py
+      - name: Validar diff
+        run: git diff --check && git diff -- app/dashboard/inventory/adjustments/page.tsx
+      - name: Commitar página alterada
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add app/dashboard/inventory/adjustments/page.tsx
+          git commit -m "feat: classificar ferramentas por últimos modificados"
+          git push
