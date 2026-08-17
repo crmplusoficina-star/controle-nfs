@@ -67,6 +67,43 @@ function normalize(value?: string | null) {
     .trim();
 }
 
+function normalizeCode(value?: string | null) {
+  return (value || '').toUpperCase().replace(/[^A-Z0-9]/g, '').trim();
+}
+
+async function fileAsDataUrl(file: File) {
+  return await new Promise<string>((resolve, reject) => {
+    const reader = new FileReader();
+    reader.onload = () => resolve(String(reader.result));
+    reader.onerror = () => reject(reader.error);
+    reader.readAsDataURL(file);
+  });
+}
+
+async function optimizedImage(file: File, maxSide = 1100, quality = 0.72) {
+  const original = await fileAsDataUrl(file);
+  const image = await new Promise<HTMLImageElement>((resolve, reject) => {
+    const img = new window.Image();
+    img.onload = () => resolve(img);
+    img.onerror = reject;
+    img.src = original;
+  });
+  const scale = Math.min(1, maxSide / Math.max(image.width, image.height));
+  const canvas = document.createElement('canvas');
+  canvas.width = Math.max(1, Math.round(image.width * scale));
+  canvas.height = Math.max(1, Math.round(image.height * scale));
+  const context = canvas.getContext('2d');
+  if (!context) return original;
+  context.drawImage(image, 0, 0, canvas.width, canvas.height);
+  let result = canvas.toDataURL('image/jpeg', quality);
+  let nextQuality = quality;
+  while (result.length > 550_000 && nextQuality > 0.46) {
+    nextQuality -= 0.06;
+    result = canvas.toDataURL('image/jpeg', nextQuality);
+  }
+  return result;
+}
+
 function toolPhotos(tool: Tool) {
   return Array.from(new Set([
     tool.image_url,
@@ -99,6 +136,7 @@ export default function InventoryAdjustmentsPage() {
   const [branches, setBranches] = useState<Branch[]>([]);
   const [branchId, setBranchId] = useState('');
   const [tools, setTools] = useState<Tool[]>([]);
+  const [catalog, setCatalog] = useState<Tool[]>([]);
   const [drafts, setDrafts] = useState<Record<string, Draft>>({});
   const [query, setQuery] = useState('');
   const [filter, setFilter] = useState<FilterMode>('all');
@@ -112,6 +150,15 @@ export default function InventoryAdjustmentsPage() {
   const [message, setMessage] = useState('');
   const [successId, setSuccessId] = useState('');
   const cameraInputRef = useRef<HTMLInputElement>(null);
+  const catalogRef = useRef<Tool[]>([]);
+  const draftsRef = useRef<Record<string, Draft>>({});
+  const lookupTimersRef = useRef<Record<string, number>>({});
+
+  useEffect(() => { catalogRef.current = catalog; }, [catalog]);
+  useEffect(() => { draftsRef.current = drafts; }, [drafts]);
+  useEffect(() => () => {
+    Object.values(lookupTimersRef.current).forEach(timer => window.clearTimeout(timer));
+  }, []);
 
   useEffect(() => {
     const loadBranches = async () => {
@@ -151,11 +198,17 @@ export default function InventoryAdjustmentsPage() {
     }
     setLoading(true);
     setMessage('');
-    const { data, error } = await supabase
-      .from('tools')
-      .select('id,name,code,brand,branch,branch_id,location,quantity_available,cautela_quantity,borrowed_quantity,status,image_url,image_urls,created_at,updated_at')
-      .eq('branch_id', selectedBranchId)
-      .order('updated_at', { ascending: false });
+    const [{ data, error }, { data: catalogData, error: catalogError }] = await Promise.all([
+      supabase
+        .from('tools')
+        .select('id,name,code,brand,branch,branch_id,location,quantity_available,cautela_quantity,borrowed_quantity,status,image_url,image_urls,created_at,updated_at')
+        .eq('branch_id', selectedBranchId)
+        .order('updated_at', { ascending: false }),
+      supabase
+        .from('tools')
+        .select('id,name,code,brand,branch,branch_id,location,quantity_available,cautela_quantity,borrowed_quantity,status,image_url,image_urls,created_at,updated_at')
+        .order('updated_at', { ascending: false }),
+    ]);
 
     if (error) {
       console.error(error);
@@ -163,8 +216,12 @@ export default function InventoryAdjustmentsPage() {
       setLoading(false);
       return;
     }
+    if (catalogError) console.warn('Catálogo global indisponível para preenchimento automático:', catalogError);
 
     const rows = (data || []) as Tool[];
+    const globalRows = (catalogData || rows) as Tool[];
+    setCatalog(globalRows);
+    catalogRef.current = globalRows;
     rows.sort((a, b) => {
       const blankA = a.name?.trim() ? 1 : 0;
       const blankB = b.name?.trim() ? 1 : 0;
@@ -235,6 +292,138 @@ export default function InventoryAdjustmentsPage() {
       || draft.quantity_available !== Math.max(0, Number(tool.quantity_available) || 0);
   };
 
+  const templateByCode = (tool: Tool, value: string) => {
+    const code = normalizeCode(value);
+    if (!code) return null;
+    const matches = catalogRef.current.filter(item => item.id !== tool.id && normalizeCode(item.code) === code);
+    return matches.find(item => item.branch_id !== tool.branch_id) || matches[0] || null;
+  };
+
+  const deleteFileIfUnused = async (photoUrl: string, ownerToolId: string) => {
+    if (!photoUrl) return;
+    const { data, error } = await supabase
+      .from('tools')
+      .select('id,image_url,image_urls')
+      .neq('id', ownerToolId);
+    if (error) {
+      console.warn('Não foi possível verificar uso compartilhado da foto:', error);
+      return;
+    }
+    const shared = (data || []).some((item: any) => item.image_url === photoUrl || (Array.isArray(item.image_urls) && item.image_urls.includes(photoUrl)));
+    if (!shared) {
+      const deleted = await deleteFile(photoUrl);
+      if (!deleted) console.warn('A foto saiu do cadastro, mas não foi possível removê-la do storage.');
+    }
+  };
+
+  const applyCatalogTemplate = async (tool: Tool, template: Tool, adoptCode = false) => {
+    if (!template || template.id === tool.id) return;
+    const currentDraft = draftsRef.current[tool.id] || makeDraft(tool);
+    const currentName = currentDraft.name.trim();
+    const pendingName = !currentName || normalize(currentName).includes('ferramenta nao identificada');
+    const nextName = pendingName ? String(template.name || '').trim() : currentDraft.name;
+    const nextBrand = currentDraft.brand.trim() || String(template.brand || '').trim();
+    const localPhotos = toolPhotos(tool);
+    const referencePhotos = toolPhotos(template);
+    const imageUrls = Array.from(new Set([...localPhotos, ...referencePhotos]));
+    const primaryPhoto = tool.image_url || imageUrls[0] || null;
+    const sameBranchConflict = catalogRef.current.some(item =>
+      item.id !== tool.id && item.branch_id === tool.branch_id && normalizeCode(item.code) === normalizeCode(template.code)
+    );
+    const canAdoptCode = adoptCode && !sameBranchConflict && Boolean(template.code) && (
+      !currentDraft.code.trim()
+      || normalize(currentDraft.code).startsWith('gen-')
+      || normalizeCode(currentDraft.code) === normalizeCode(template.code)
+    );
+    const nextCode = canAdoptCode ? template.code : currentDraft.code;
+    const updatedAt = new Date().toISOString();
+    const payload: Record<string, unknown> = {
+      name: nextName,
+      brand: nextBrand || null,
+      image_url: primaryPhoto,
+      image_urls: imageUrls,
+      updated_at: updatedAt,
+    };
+    if (canAdoptCode) payload.code = template.code;
+
+    const { error } = await supabase.from('tools').update(payload).eq('id', tool.id);
+    if (error) {
+      console.warn('Preenchimento automático ignorado:', error);
+      return;
+    }
+
+    const updatedTool = { ...tool, ...payload, code: nextCode } as Tool;
+    setTools(current => current.map(item => item.id === tool.id ? updatedTool : item));
+    setDrafts(current => {
+      const next = {
+        ...current,
+        [tool.id]: {
+          ...(current[tool.id] || makeDraft(tool)),
+          name: nextName,
+          brand: nextBrand,
+          code: nextCode,
+        },
+      };
+      draftsRef.current = next;
+      return next;
+    });
+    setCatalog(current => {
+      const next = current.map(item => item.id === tool.id ? updatedTool : item);
+      catalogRef.current = next;
+      return next;
+    });
+  };
+
+  const scheduleCodeLookup = (tool: Tool, rawCode: string) => {
+    const previous = lookupTimersRef.current[tool.id];
+    if (previous) window.clearTimeout(previous);
+    const code = normalizeCode(rawCode);
+    if (!code || code.startsWith('GEN')) return;
+    lookupTimersRef.current[tool.id] = window.setTimeout(() => {
+      const template = templateByCode(tool, rawCode);
+      if (template) void applyCatalogTemplate(tool, template, true);
+    }, 260);
+  };
+
+  const identifyTemplateFromPhoto = async (file: File, tool: Tool) => {
+    try {
+      const image = await optimizedImage(file);
+      const catalogPayload = catalogRef.current.map(item => ({
+        name: item.name,
+        code: item.code,
+        brand: item.brand || null,
+      }));
+      const response = await fetch('/api/ai/inventory-fast', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ image, catalog: catalogPayload }),
+      });
+      if (!response.ok) return null;
+      const data = await response.json().catch(() => ({}));
+      const found = Array.isArray(data?.items) ? data.items : [];
+      const matches: Tool[] = [];
+      for (const item of found) {
+        const visibleCode = String(item?.catalogCode || item?.code || '').trim();
+        let template = visibleCode ? templateByCode(tool, visibleCode) : null;
+        if (!template) {
+          const detectedName = normalize(String(item?.name || ''));
+          if (detectedName && !detectedName.includes('ferramenta nao identificada')) {
+            const byName = catalogRef.current.filter(entry => entry.id !== tool.id && normalize(entry.name) === detectedName);
+            const uniqueCodes = new Set(byName.map(entry => normalizeCode(entry.code)).filter(Boolean));
+            if (byName.length && uniqueCodes.size === 1) {
+              template = byName.find(entry => entry.branch_id !== tool.branch_id) || byName[0] || null;
+            }
+          }
+        }
+        if (template && !matches.some(existing => existing.id === template!.id)) matches.push(template);
+      }
+      return matches.length === 1 ? matches[0] : null;
+    } catch (error) {
+      console.warn('Reconhecimento silencioso do cadastro não concluído:', error);
+      return null;
+    }
+  };
+
   const openCamera = (toolId: string, photoUrl = '') => {
     if (uploadingPhotoId || deletingPhotoId) return;
     setPhotoTargetId(toolId);
@@ -253,6 +442,7 @@ export default function InventoryAdjustmentsPage() {
 
     setUploadingPhotoId(toolId);
     setMessage('');
+    const identification = identifyTemplateFromPhoto(selectedFiles[0], tool);
     try {
       const uploaded = await Promise.all(
         selectedFiles.map(file => uploadFile(file, 'ferramentas/inventario/ajustes')),
@@ -276,13 +466,19 @@ export default function InventoryAdjustmentsPage() {
       }).eq('id', tool.id);
       if (error) throw error;
 
-      setTools(current => current.map(item => item.id === tool.id
-        ? { ...item, image_url: primaryPhoto, image_urls: imageUrls, updated_at: updatedAt }
-        : item));
+      const toolWithNewPhotos = { ...tool, image_url: primaryPhoto, image_urls: imageUrls, updated_at: updatedAt };
+      setTools(current => current.map(item => item.id === tool.id ? toolWithNewPhotos : item));
+      setCatalog(current => {
+        const next = current.map(item => item.id === tool.id ? toolWithNewPhotos : item);
+        catalogRef.current = next;
+        return next;
+      });
+
+      const template = await identification;
+      if (template) await applyCatalogTemplate(toolWithNewPhotos, template, true);
 
       if (replacing && replacePhotoUrl && replacePhotoUrl !== uploadedUrls[0]) {
-        const deleted = await deleteFile(replacePhotoUrl);
-        if (!deleted) console.warn('A foto antiga saiu do cadastro, mas não foi possível removê-la do storage.');
+        await deleteFileIfUnused(replacePhotoUrl, tool.id);
       }
 
       setSuccessId(tool.id);
@@ -321,8 +517,7 @@ export default function InventoryAdjustmentsPage() {
         ? { ...item, image_url: primaryPhoto, image_urls: remaining, updated_at: updatedAt }
         : item));
 
-      const deleted = await deleteFile(photoUrl);
-      if (!deleted) console.warn('A foto foi removida do cadastro, mas o arquivo não pôde ser apagado do storage.');
+      await deleteFileIfUnused(photoUrl, tool.id);
 
       setSuccessId(tool.id);
       window.setTimeout(() => setSuccessId(current => current === tool.id ? '' : current), 1800);
@@ -364,7 +559,13 @@ export default function InventoryAdjustmentsPage() {
       return;
     }
 
-    setTools(current => current.map(item => item.id === tool.id ? { ...item, ...payload } : item));
+    const updatedTool = { ...tool, ...payload } as Tool;
+    setTools(current => current.map(item => item.id === tool.id ? updatedTool : item));
+    setCatalog(current => {
+      const next = current.map(item => item.id === tool.id ? updatedTool : item);
+      catalogRef.current = next;
+      return next;
+    });
     setDrafts(current => ({ ...current, [tool.id]: { ...draft, ...payload, brand: draft.brand.trim(), location: draft.location.trim().toUpperCase() } }));
     setSuccessId(tool.id);
     setSavingId('');
@@ -557,7 +758,7 @@ export default function InventoryAdjustmentsPage() {
 
                     <div className="grid grid-cols-1 md:grid-cols-2 xl:grid-cols-5 gap-3">
                       <label className="xl:col-span-2"><span className="block mb-1.5 text-[9px] font-black uppercase tracking-widest text-slate-400">Nome da ferramenta</span><input value={draft.name} onChange={event => updateDraft(tool.id, { name: event.target.value })} placeholder="Pode deixar em branco" className={`w-full px-4 py-3 rounded-xl outline-none focus:ring-2 focus:ring-indigo-400 font-black text-sm ${draft.name.trim() ? 'bg-slate-50' : 'bg-amber-50 text-amber-900'}`} /></label>
-                      <label><span className="block mb-1.5 text-[9px] font-black uppercase tracking-widest text-slate-400">Código</span><div className="relative"><Tag size={14} className="absolute left-3 top-1/2 -translate-y-1/2 text-slate-400" /><input value={draft.code} onChange={event => updateDraft(tool.id, { code: event.target.value.toUpperCase() })} className="w-full pl-9 pr-3 py-3 rounded-xl bg-slate-50 outline-none focus:ring-2 focus:ring-indigo-400 font-mono font-bold text-sm" /></div></label>
+                      <label><span className="block mb-1.5 text-[9px] font-black uppercase tracking-widest text-slate-400">Código</span><div className="relative"><Tag size={14} className="absolute left-3 top-1/2 -translate-y-1/2 text-slate-400" /><input value={draft.code} onChange={event => { const code = event.target.value.toUpperCase(); updateDraft(tool.id, { code }); scheduleCodeLookup(tool, code); }} className="w-full pl-9 pr-3 py-3 rounded-xl bg-slate-50 outline-none focus:ring-2 focus:ring-indigo-400 font-mono font-bold text-sm" /></div></label>
                       <label><span className="block mb-1.5 text-[9px] font-black uppercase tracking-widest text-slate-400">Marca</span><input value={draft.brand} onChange={event => updateDraft(tool.id, { brand: event.target.value })} className="w-full px-4 py-3 rounded-xl bg-slate-50 outline-none focus:ring-2 focus:ring-indigo-400 font-bold text-sm" /></label>
                       <label><span className="block mb-1.5 text-[9px] font-black uppercase tracking-widest text-slate-400">Locação</span><input value={draft.location} onChange={event => updateDraft(tool.id, { location: event.target.value.toUpperCase() })} placeholder="Ex.: A2" className="w-full px-4 py-3 rounded-xl bg-slate-50 outline-none focus:ring-2 focus:ring-indigo-400 font-black uppercase text-sm" /></label>
                     </div>
