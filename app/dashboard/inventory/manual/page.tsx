@@ -70,14 +70,6 @@ export default function ManualInventoryBulkPage() {
   const [successCount, setSuccessCount] = useState(0);
 
   useEffect(() => {
-    return () => {
-      rows.forEach(row => {
-        if (row.preview) URL.revokeObjectURL(row.preview);
-      });
-    };
-  }, [rows]);
-
-  useEffect(() => {
     const load = async () => {
       setLoading(true);
       const { data, error } = await supabase.from('branches').select('id,name,city').order('name');
