@@ -1,6 +1,7 @@
 from pathlib import Path
 import re
 
+# Este script é executado apenas na branch de correção para aplicar o patch com validações.
 route_path = Path('app/api/ai/inventory-fast/route.ts')
 route = route_path.read_text()
 
