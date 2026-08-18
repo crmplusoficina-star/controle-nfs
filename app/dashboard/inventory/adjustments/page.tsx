@@ -474,7 +474,7 @@ export default function InventoryAdjustmentsPage() {
         : Array.from(new Set([...oldUrls, ...uploadedUrls]));
       const primaryPhoto = replacing
         ? (tool.image_url === replacePhotoUrl ? uploadedUrls[0] : (tool.image_url || imageUrls[0] || null))
-        : (uploadedUrls[0] || oldUrls[0] || null);
+        : (uploadedUrls[uploadedUrls.length - 1] || oldUrls[0] || null);
       const updatedAt = new Date().toISOString();
       const { error } = await supabase.from('tools').update({
         image_url: primaryPhoto,

@@ -1057,7 +1057,7 @@ export default function PhotoInventoryRapid() {
 
       <section className="bg-white border border-slate-100 shadow-sm rounded-[2rem] p-5 md:p-7">
         <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-4 mb-4">
-          <div className="flex items-center gap-3"><Camera className="text-amber-600" /><div><h2 className="font-black uppercase italic text-slate-900">2. Fotos em fila</h2><p className="text-xs font-bold text-slate-400">A foto ampla é só para análise. Apenas o recorte individual é salvo.</p></div></div>
+          <div className="flex items-center gap-3"><Camera className="text-amber-600" /><div><h2 className="font-black uppercase italic text-slate-900">2. Fotos em fila</h2><p className="text-xs font-bold text-slate-400">A foto completa é preservada. Se você adicionar outra foto ao item, a última vira a principal.</p></div></div>
           <div className="flex gap-2">
             <button onClick={() => cameraRef.current?.click()} className="px-4 py-3 bg-slate-900 text-white rounded-xl font-black uppercase text-xs flex items-center gap-2"><Camera size={16} /> Câmera</button>
             <button onClick={() => galleryRef.current?.click()} className="px-4 py-3 bg-slate-100 text-slate-700 rounded-xl font-black uppercase text-xs flex items-center gap-2"><Images size={16} /> Galeria</button>
