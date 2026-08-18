@@ -831,6 +831,15 @@ export default function PhotoInventoryRapid() {
     return catalog.filter(tool => tool.branch_id === branch.id && normalize(tool.location) === loc);
   }, [catalog, branch, location]);
 
+  const primaryPreviewForItem = (item: Candidate) => {
+    const latestExtra = item.extraPhotos[item.extraPhotos.length - 1]?.preview;
+    if (latestExtra) return latestExtra;
+    const sourcePhoto = item.sourcePhotoId
+      ? photosRef.current.find(photo => photo.id === item.sourcePhotoId)?.preview
+      : null;
+    return sourcePhoto || item.cropPreview || null;
+  };
+
   const includedItems = useMemo(() => items.filter(item => item.included), [items]);
   const missingExpected = useMemo(() => expectedAtLocation.filter(tool =>
     !includedItems.some(item => candidateMatchesTool(item, tool))
@@ -861,24 +870,50 @@ export default function PhotoInventoryRapid() {
       let updated = 0;
       const missingBeforeSave = missingExpected.length;
 
+      // Uma foto da fila pode originar vários itens. Fazemos upload da imagem
+      // completa uma única vez e reutilizamos a URL, evitando salvar recortes como padrão.
+      const sourceUploadCache = new Map<string, string | null>();
+
       for (const item of selected) {
         const identity = resolveIdentity(item);
         const quantity = Math.max(1, Math.round(Number(item.quantity) || 1));
-        let cropUrl: string | null = null;
         const safeName = normalize(identity.name).replace(/\s+/g, '-').slice(0, 50) || 'item';
-        if (item.cropPreview) {
-          cropUrl = await uploadFile(
+
+        let sourceUrl: string | null = null;
+        if (item.sourcePhotoId) {
+          if (sourceUploadCache.has(item.sourcePhotoId)) {
+            sourceUrl = sourceUploadCache.get(item.sourcePhotoId) || null;
+          } else {
+            const sourcePhoto = photosRef.current.find(photo => photo.id === item.sourcePhotoId);
+            sourceUrl = sourcePhoto
+              ? await uploadFile(sourcePhoto.file, 'ferramentas/inventario/originais')
+              : null;
+            sourceUploadCache.set(item.sourcePhotoId, sourceUrl);
+          }
+        } else if (item.cropPreview) {
+          // Item manual: cropPreview neste fluxo é a própria foto aproximada completa.
+          sourceUrl = await uploadFile(
             dataUrlToFile(item.cropPreview, `${safeName}-${Date.now()}.jpg`),
-            'ferramentas/inventario/recortes',
+            'ferramentas/inventario/itens',
           );
         }
+
         const extraUrls = (await Promise.all(
           item.extraPhotos.map((photo, photoIndex) => uploadFile(
             photo.file,
             `ferramentas/inventario/itens/${safeName}-${photoIndex + 1}`,
           )),
         )).filter((url): url is string => Boolean(url));
-        const capturedUrls = Array.from(new Set([cropUrl, ...extraUrls].filter(Boolean) as string[]));
+
+        // Regra de foto principal: a última foto adicionada pelo usuário sempre vence.
+        // Se não houver complementar, usamos a foto COMPLETA da captura em massa.
+        const latestExtraUrl = extraUrls.length ? extraUrls[extraUrls.length - 1] : null;
+        const newPrimaryUrl = latestExtraUrl || sourceUrl || null;
+        const capturedUrls = Array.from(new Set([
+          newPrimaryUrl,
+          ...[...extraUrls].reverse(),
+          sourceUrl,
+        ].filter(Boolean) as string[]));
 
         const { data: existing, error: findError } = await supabase
           .from('tools')
@@ -899,7 +934,7 @@ export default function PhotoInventoryRapid() {
             brand: item.brand.trim() || existing.brand || null,
             quantity_available: Math.max(currentAvailable, quantity),
             location: location.trim().toUpperCase(),
-            image_url: capturedUrls[0] || existing.image_url || null,
+            image_url: newPrimaryUrl || existing.image_url || null,
             image_urls: finalUrls,
             updated_at: new Date().toISOString(),
           }).eq('id', existing.id);
@@ -917,7 +952,7 @@ export default function PhotoInventoryRapid() {
             borrowed_quantity: 0,
             status: 'disponivel',
             location: location.trim().toUpperCase(),
-            image_url: capturedUrls[0] || null,
+            image_url: newPrimaryUrl || null,
             image_urls: capturedUrls,
           });
           if (error) throw error;
@@ -1082,7 +1117,7 @@ export default function PhotoInventoryRapid() {
                   <div className="p-3 sm:p-4 flex items-center gap-3">
                     <button onClick={() => updateItem(item.id, { included: !item.included })} className={`w-8 h-8 shrink-0 rounded-xl flex items-center justify-center border-2 ${item.included ? 'bg-emerald-600 border-emerald-600 text-white' : 'border-slate-300 text-transparent'}`}><Check size={17} /></button>
                     <div className="relative w-16 h-16 shrink-0 rounded-xl overflow-hidden bg-slate-100 border border-slate-100">
-                      {item.cropPreview ? <Image src={item.cropPreview} alt={item.name || `Item ${index + 1}`} fill unoptimized className="object-contain" /> : <div className="w-full h-full flex items-center justify-center text-slate-300"><Package size={24} /></div>}
+                      {primaryPreviewForItem(item) ? <Image src={primaryPreviewForItem(item)!} alt={item.name || `Item ${index + 1}`} fill unoptimized className="object-contain bg-slate-950" /> : <div className="w-full h-full flex items-center justify-center text-slate-300"><Package size={24} /></div>}
                     </div>
                     <div className="min-w-0 flex-1">
                       <div className="flex flex-wrap items-center gap-1.5 mb-1">
@@ -1105,7 +1140,7 @@ export default function PhotoInventoryRapid() {
                       </div>
                       <div className="mt-4 rounded-2xl bg-white border border-slate-200 p-3">
                         <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-2">
-                          <div><p className="text-[9px] font-black uppercase tracking-widest text-slate-500">Fotos deste item</p><p className="mt-1 text-[10px] font-bold text-slate-400">O recorte da IA fica como principal. Adicione quantas fotos complementares precisar antes de salvar.</p></div>
+                          <div><p className="text-[9px] font-black uppercase tracking-widest text-slate-500">Fotos deste item</p><p className="mt-1 text-[10px] font-bold text-slate-400">A foto completa é preservada. A última foto que você adicionar neste item será usada como principal.</p></div>
                           <div className="flex gap-2">
                             <label className="px-3 py-2 rounded-lg bg-slate-900 text-white font-black uppercase text-[9px] flex items-center gap-1.5 cursor-pointer"><Camera size={13} /> Câmera<input type="file" accept="image/*" capture="environment" className="hidden" onChange={event => { addItemPhotos(item.id, event.target.files); event.currentTarget.value = ''; }} /></label>
                             <label className="px-3 py-2 rounded-lg bg-indigo-50 text-indigo-700 font-black uppercase text-[9px] flex items-center gap-1.5 cursor-pointer"><Images size={13} /> Galeria<input type="file" accept="image/*" multiple className="hidden" onChange={event => { addItemPhotos(item.id, event.target.files); event.currentTarget.value = ''; }} /></label>
@@ -1116,6 +1151,7 @@ export default function PhotoInventoryRapid() {
                             {item.extraPhotos.map((photo, photoIndex) => (
                               <div key={photo.id} className="relative aspect-square rounded-xl overflow-hidden bg-slate-100 border border-slate-200">
                                 <Image src={photo.preview} alt={`Foto complementar ${photoIndex + 1}`} fill unoptimized className="object-contain bg-slate-950" />
+                                {photoIndex === item.extraPhotos.length - 1 && <span className="absolute left-1.5 bottom-1.5 rounded-md bg-emerald-600 px-1.5 py-1 text-[7px] font-black uppercase text-white">Principal</span>}
                                 <button type="button" onClick={() => removeItemPhoto(item.id, photo.id)} className="absolute top-1.5 right-1.5 p-1.5 rounded-lg bg-black/65 text-white" aria-label="Remover foto complementar"><Trash2 size={12} /></button>
                               </div>
                             ))}
