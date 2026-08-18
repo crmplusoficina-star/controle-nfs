@@ -1,0 +1,33 @@
+name: Corrigir foto principal do inventário
+
+on:
+  push:
+    branches:
+      - fix/inventario-foto-principal-inteira
+
+permissions:
+  contents: write
+
+jobs:
+  patch:
+    if: github.actor != 'github-actions[bot]'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: fix/inventario-foto-principal-inteira
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.x'
+      - run: python3 scripts/patch-inventory-full-primary-photo.py
+      - name: Commit patch
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add components/inventory/PhotoInventoryRapid.tsx
+          if git diff --cached --quiet; then
+            echo "No changes"
+          else
+            git commit -m "fix: preservar foto inteira e usar a última como principal"
+            git push
+          fi
