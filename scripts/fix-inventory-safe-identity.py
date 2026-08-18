@@ -1,7 +1,7 @@
 from pathlib import Path
 import re
 
-# Este script é executado apenas na branch de correção para aplicar o patch com validações.
+# Este script é executado no predev/prebuild e precisa poder rodar mais de uma vez.
 route_path = Path('app/api/ai/inventory-fast/route.ts')
 route = route_path.read_text()
 
@@ -38,9 +38,10 @@ new_attach = '''function attachCatalogMatches(items: InventoryItem[], catalog: C
 }
 '''
 
-if old_attach not in route:
+if old_attach in route:
+    route = route.replace(old_attach, new_attach, 1)
+elif new_attach not in route:
     raise SystemExit('attachCatalogMatches esperado não localizado')
-route = route.replace(old_attach, new_attach, 1)
 route_path.write_text(route)
 
 component_path = Path('components/inventory/PhotoInventoryRapid.tsx')
@@ -99,9 +100,10 @@ if count != 1:
 
 old_candidate_code = "      const code = match?.code || String(ai.code || '').trim();"
 new_candidate_code = "      // Código do candidato é somente o que foi realmente lido na foto.\n      const code = String(ai.code || '').trim();"
-if old_candidate_code not in source:
+if old_candidate_code in source:
+    source = source.replace(old_candidate_code, new_candidate_code, 1)
+elif new_candidate_code not in source:
     raise SystemExit('atribuição de código do candidato não localizada')
-source = source.replace(old_candidate_code, new_candidate_code, 1)
 
 resolve_pattern = re.compile(
     r"  const resolveIdentity = \(item: Candidate\) => \{.*?\n  \};\n\n  const expectedAtLocation",
