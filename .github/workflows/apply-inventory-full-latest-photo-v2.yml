@@ -1,4 +1,4 @@
-name: Corrigir fotos do inventário v2
+name: Limpar correção final de fotos
 
 on:
   push:
@@ -9,25 +9,21 @@ permissions:
   contents: write
 
 jobs:
-  patch:
+  cleanup:
     if: github.actor != 'github-actions[bot]'
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
         with:
           ref: fix/inventario-foto-principal-inteira-v2
-      - uses: actions/setup-python@v5
-        with:
-          python-version: '3.x'
-      - run: python3 scripts/patch-inventory-full-latest-photo-v2.py
-      - name: Commit patch
+      - name: Remover temporários
+        run: |
+          rm -f scripts/patch-inventory-full-latest-photo-v2.py
+          rm -f .github/workflows/apply-inventory-full-latest-photo-v2.yml
+      - name: Commit cleanup
         run: |
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
-          git add components/inventory/PhotoInventoryRapid.tsx app/dashboard/inventory/adjustments/page.tsx
-          if git diff --cached --quiet; then
-            echo "No changes"
-          else
-            git commit -m "fix: salvar foto inteira e usar a última como principal"
-            git push
-          fi
+          git add -A
+          git commit -m "chore: remover temporários da correção final de fotos"
+          git push
