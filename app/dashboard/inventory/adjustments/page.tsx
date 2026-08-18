@@ -471,7 +471,7 @@ export default function InventoryAdjustmentsPage() {
       const replacing = Boolean(replacePhotoUrl);
       const imageUrls = replacing
         ? oldUrls.map(url => url === replacePhotoUrl ? uploadedUrls[0] : url)
-        : Array.from(new Set([...oldUrls, ...uploadedUrls]));
+        : Array.from(new Set([...uploadedUrls].reverse().concat(oldUrls)));
       const primaryPhoto = replacing
         ? (tool.image_url === replacePhotoUrl ? uploadedUrls[0] : (tool.image_url || imageUrls[0] || null))
         : (uploadedUrls[uploadedUrls.length - 1] || oldUrls[0] || null);
