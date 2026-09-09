@@ -31,12 +31,29 @@ if fetch_finally not in text:
     raise RuntimeError('fetchData finally anchor not found')
 text = text.replace(fetch_finally, fetch_finally_new, 1)
 
+# Batch-save reconciliation should also happen in the background.
+if "    await fetchData();\n\n    const remainingItems = batchSnapshot.filter" in text:
+    text = text.replace(
+        "    await fetchData();\n\n    const remainingItems = batchSnapshot.filter",
+        "    await fetchData(false, true);\n\n    const remainingItems = batchSnapshot.filter",
+        1,
+    )
+
 # Saving a form should only lock the save button/modal, not blank the table.
 submit_start = """  const handleSubmit = async (e: React.FormEvent) => {\n    e.preventDefault();\n    setIsLoading(true);\n"""
 submit_start_new = """  const handleSubmit = async (e: React.FormEvent) => {\n    e.preventDefault();\n    setIsSubmitting(true);\n"""
 if submit_start not in text:
     raise RuntimeError('handleSubmit start anchor not found')
 text = text.replace(submit_start, submit_start_new, 1)
+
+# The batch branch is injected by apply-bulk-nf-save-all.py before this patch.
+batch_finally = """      } finally {\n        setIsLoading(false);\n      }\n      return;\n"""
+if batch_finally in text:
+    text = text.replace(
+        batch_finally,
+        """      } finally {\n        setIsSubmitting(false);\n      }\n      return;\n""",
+        1,
+    )
 
 # Duplicate detection exits the submit flow without touching global loading.
 duplicate_exit = """        setIsLoading(false);\n        return;\n"""
@@ -134,18 +151,37 @@ quick_replacement = r'''  const handleQuickUpdate = async (id: string, field: st
 
 text = text[:quick_start] + quick_replacement + text[quick_end:]
 
-# The modal button uses its own submission state.
-button_disabled = "disabled={isProcessing || isLoading}"
-button_disabled_new = "disabled={isProcessing || isSubmitting}"
-if button_disabled not in text:
+# The modal button uses its own submission state. Support both the normal form and
+# the batch-save variant injected by the existing build patch.
+batch_disabled = "disabled={isProcessing || isLoading || (isInvoiceBatch ? !batchInvoices.some(item => item.status === 'ready') : activeBatchInvoice?.status === 'saved')}"
+normal_disabled = "disabled={isProcessing || isLoading}"
+if batch_disabled in text:
+    text = text.replace(
+        batch_disabled,
+        "disabled={isProcessing || isSubmitting || (isInvoiceBatch ? !batchInvoices.some(item => item.status === 'ready') : activeBatchInvoice?.status === 'saved')}",
+        1,
+    )
+elif normal_disabled in text:
+    text = text.replace(normal_disabled, "disabled={isProcessing || isSubmitting}", 1)
+else:
     raise RuntimeError('Submit button disabled anchor not found')
-text = text.replace(button_disabled, button_disabled_new, 1)
 
-button_label = "{isLoading ? 'Salvando...' : `Salvar ${editingInvoice ? 'Alterações' : 'NF no Sistema'}`}"
-button_label_new = "{isSubmitting ? 'Salvando...' : `Salvar ${editingInvoice ? 'Alterações' : 'NF no Sistema'}`}"
-if button_label not in text:
+batch_label = "{isLoading ? 'Salvando lote...' : isInvoiceBatch ? (batchInvoices.some(item => item.status === 'ready') ? `Salvar todas as NFs (${batchInvoices.filter(item => item.status === 'ready').length})` : 'Leia as NFs antes de salvar') : activeBatchInvoice?.status === 'saved' ? 'NF já salva' : `Salvar ${editingInvoice ? 'Alterações' : 'NF no Sistema'}`}"
+normal_label = "{isLoading ? 'Salvando...' : `Salvar ${editingInvoice ? 'Alterações' : 'NF no Sistema'}`}"
+if batch_label in text:
+    text = text.replace(
+        batch_label,
+        "{isSubmitting ? 'Salvando lote...' : isInvoiceBatch ? (batchInvoices.some(item => item.status === 'ready') ? `Salvar todas as NFs (${batchInvoices.filter(item => item.status === 'ready').length})` : 'Leia as NFs antes de salvar') : activeBatchInvoice?.status === 'saved' ? 'NF já salva' : `Salvar ${editingInvoice ? 'Alterações' : 'NF no Sistema'}`}",
+        1,
+    )
+elif normal_label in text:
+    text = text.replace(
+        normal_label,
+        "{isSubmitting ? 'Salvando...' : `Salvar ${editingInvoice ? 'Alterações' : 'NF no Sistema'}`}",
+        1,
+    )
+else:
     raise RuntimeError('Submit button label anchor not found')
-text = text.replace(button_label, button_label_new, 1)
 
 path.write_text(text, encoding='utf-8')
 print('Fast NF updates applied successfully.')
