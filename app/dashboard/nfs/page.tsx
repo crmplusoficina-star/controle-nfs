@@ -383,7 +383,12 @@ export default function NFControlPage() {
       const imageCatalog = (imageCatalogData || []).filter((item: any) =>
         Boolean(item.image_url) || (Array.isArray(item.image_urls) && item.image_urls.length > 0)
       );
-      const imageMatch = incomingToolName ? findSafeToolNameMatch(incomingToolName, imageCatalog) : null;
+      const normalizeToolCode = (value: any) => String(value || '').trim().toLowerCase().replace(/\s+/g, '');
+      const requestedCode = normalizeToolCode(invoiceData.tool_code);
+      const exactCodeImageMatch = requestedCode
+        ? imageCatalog.find((item: any) => normalizeToolCode(item.code) === requestedCode)
+        : null;
+      const imageMatch = exactCodeImageMatch || (incomingToolName ? findSafeToolNameMatch(incomingToolName, imageCatalog) : null);
       const matchedImageUrls = imageMatch
         ? (Array.isArray((imageMatch as any).image_urls) && (imageMatch as any).image_urls.length > 0
             ? (imageMatch as any).image_urls
