@@ -33,6 +33,7 @@ import { motion, AnimatePresence } from 'motion/react';
 import { supabase } from '@/lib/supabase';
 import { useAuth } from '@/lib/auth-context';
 import { uploadFile } from '@/lib/storage';
+import { findSafeToolNameMatch } from '@/lib/tool-name-match';
 
 function getTimestamp() {
   return Date.now();
@@ -329,8 +330,41 @@ export default function StockPage() {
       if (toolsError) throw toolsError;
       if (toolsData) {
         console.log('DEBUG StockPage toolsData:', toolsData);
-        setTools(toolsData);
-        if (user.role !== 'Operador') setGlobalTools(toolsData);
+
+        // Recupera imagens ausentes como um PROCX por nome, usando apenas imagens
+        // que já existem no catálogo. Isso também corrige itens lançados antes desta regra.
+        const imageCatalog = toolsData.filter((item: any) =>
+          Boolean(item.image_url) || (Array.isArray(item.image_urls) && item.image_urls.length > 0)
+        );
+
+        const repairedTools = toolsData.map((tool: any) => {
+          const currentImages = Array.isArray(tool.image_urls) ? tool.image_urls.filter(Boolean) : [];
+          if (tool.image_url || currentImages.length > 0) return tool;
+
+          const match = findSafeToolNameMatch(String(tool.name || ''), imageCatalog);
+          if (!match) return tool;
+
+          const matchedImages = Array.isArray((match as any).image_urls) && (match as any).image_urls.length > 0
+            ? (match as any).image_urls.filter(Boolean)
+            : ((match as any).image_url ? [(match as any).image_url] : []);
+
+          return matchedImages.length > 0
+            ? { ...tool, image_url: matchedImages[0], image_urls: matchedImages, _imageMatchedByName: true }
+            : tool;
+        });
+
+        setTools(repairedTools);
+        if (user.role !== 'Operador') setGlobalTools(repairedTools);
+
+        const repairs = repairedTools.filter((tool: any) => tool._imageMatchedByName);
+        if (repairs.length > 0) {
+          void Promise.all(repairs.map((tool: any) =>
+            supabase.from('tools').update({
+              image_url: tool.image_url,
+              image_urls: tool.image_urls,
+            }).eq('id', tool.id)
+          ));
+        }
       }
 
       // A operação normal do Operador continua limitada à sua filial, mas a busca
