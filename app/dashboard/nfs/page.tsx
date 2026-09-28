@@ -33,6 +33,7 @@ import { useDropzone } from 'react-dropzone';
 import { uploadFile } from '@/lib/storage';
 import { useAuth } from '@/lib/auth-context';
 import { useSearchParams } from 'next/navigation';
+import { findSafeToolNameMatch } from '@/lib/tool-name-match';
 
 // Configure PDF.js worker
 if (typeof window !== 'undefined') {
@@ -367,13 +368,40 @@ export default function NFControlPage() {
       
       const qty = parseInt(invoiceData.quantity) || 1;
       
+      const incomingToolName = String(invoiceData.tool_name || '').trim();
+
+      // "PROCX" de imagem: procura uma ferramenta equivalente no catálogo global
+      // e reutiliza somente as imagens já cadastradas. A NF/PDF nunca vira foto da ferramenta.
+      const { data: imageCatalogData } = incomingToolName
+        ? await supabase
+            .from('tools')
+            .select('name,code,image_url,image_urls')
+            .or('image_url.not.is.null,image_urls.not.is.null')
+            .limit(3000)
+        : { data: [] as any[] };
+
+      const imageCatalog = (imageCatalogData || []).filter((item: any) =>
+        Boolean(item.image_url) || (Array.isArray(item.image_urls) && item.image_urls.length > 0)
+      );
+      const normalizeToolCode = (value: any) => String(value || '').trim().toLowerCase().replace(/\s+/g, '');
+      const requestedCode = normalizeToolCode(invoiceData.tool_code);
+      const exactCodeImageMatch = requestedCode
+        ? imageCatalog.find((item: any) => normalizeToolCode(item.code) === requestedCode)
+        : null;
+      const imageMatch = exactCodeImageMatch || (incomingToolName ? findSafeToolNameMatch(incomingToolName, imageCatalog) : null);
+      const matchedImageUrls = imageMatch
+        ? (Array.isArray((imageMatch as any).image_urls) && (imageMatch as any).image_urls.length > 0
+            ? (imageMatch as any).image_urls
+            : ((imageMatch as any).image_url ? [(imageMatch as any).image_url] : []))
+        : [];
+
       // Check if tool already exists by code and branch
       const { data: existingTool } = await supabase
         .from('tools')
-        .select('id, quantity_available, cautela_quantity')
+        .select('id, name, code, quantity_available, cautela_quantity, image_url, image_urls')
         .eq('code', invoiceData.tool_code)
         .eq('branch_id', invoiceData.branch_id)
-        .single();
+        .maybeSingle();
       
       if (existingTool) {
         const updatePayload: any = {};
@@ -381,6 +409,12 @@ export default function NFControlPage() {
           updatePayload.quantity_available = (existingTool.quantity_available || 0) + qty;
         } else if (invoiceData.type === 'cautela') {
           updatePayload.cautela_quantity = (existingTool.cautela_quantity || 0) + qty;
+        }
+
+        const existingImages = Array.isArray(existingTool.image_urls) ? existingTool.image_urls.filter(Boolean) : [];
+        if (!existingTool.image_url && existingImages.length === 0 && matchedImageUrls.length > 0) {
+          updatePayload.image_url = matchedImageUrls[0];
+          updatePayload.image_urls = matchedImageUrls;
         }
         
         await supabase
@@ -397,7 +431,8 @@ export default function NFControlPage() {
           branch_id: invoiceData.branch_id,
           quantity_available: invoiceData.type === 'ferramenta' ? qty : 0,
           cautela_quantity: invoiceData.type === 'cautela' ? qty : 0,
-          image_url: invoiceData.invoice_url?.toLowerCase().endsWith('.pdf') ? null : invoiceData.invoice_url
+          image_url: matchedImageUrls[0] || null,
+          image_urls: matchedImageUrls
         };
         await supabase.from('tools').insert([newTool]);
       }

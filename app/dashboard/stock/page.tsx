@@ -33,6 +33,7 @@ import { motion, AnimatePresence } from 'motion/react';
 import { supabase } from '@/lib/supabase';
 import { useAuth } from '@/lib/auth-context';
 import { uploadFile } from '@/lib/storage';
+import { findSafeToolNameMatch } from '@/lib/tool-name-match';
 
 function getTimestamp() {
   return Date.now();
@@ -329,8 +330,64 @@ export default function StockPage() {
       if (toolsError) throw toolsError;
       if (toolsData) {
         console.log('DEBUG StockPage toolsData:', toolsData);
-        setTools(toolsData);
-        if (user.role !== 'Operador') setGlobalTools(toolsData);
+
+        // Catálogo global de imagens: permite recuperar uma foto mesmo quando
+        // o item equivalente está em outra filial.
+        const { data: globalImageCatalogData, error: globalImageCatalogError } = await supabase
+          .from('tools')
+          .select('id,name,code,image_url,image_urls')
+          .or('image_url.not.is.null,image_urls.not.is.null')
+          .limit(5000);
+        if (globalImageCatalogError) throw globalImageCatalogError;
+
+        const imageCatalog = (globalImageCatalogData || []).filter((item: any) =>
+          Boolean(item.image_url) || (Array.isArray(item.image_urls) && item.image_urls.length > 0)
+        );
+
+        const normalizeCode = (value: any) => String(value || '').trim().toLowerCase().replace(/\s+/g, '');
+        const imageSourceByCode = new Map<string, any>();
+        for (const item of imageCatalog) {
+          const codeKey = normalizeCode(item.code);
+          if (codeKey && !imageSourceByCode.has(codeKey)) imageSourceByCode.set(codeKey, item);
+        }
+
+        const repairedTools = toolsData.map((tool: any) => {
+          const currentImages = Array.isArray(tool.image_urls) ? tool.image_urls.filter(Boolean) : [];
+          if (tool.image_url || currentImages.length > 0) return tool;
+
+          // 1) PROCX exato pelo código; 2) fallback seguro pelo nome.
+          const exactCodeMatch = imageSourceByCode.get(normalizeCode(tool.code));
+          const match = exactCodeMatch || findSafeToolNameMatch(String(tool.name || ''), imageCatalog);
+          if (!match || match.id === tool.id) return tool;
+
+          const matchedImages = Array.isArray((match as any).image_urls) && (match as any).image_urls.length > 0
+            ? (match as any).image_urls.filter(Boolean)
+            : ((match as any).image_url ? [(match as any).image_url] : []);
+
+          return matchedImages.length > 0
+            ? {
+                ...tool,
+                image_url: matchedImages[0],
+                image_urls: matchedImages,
+                _imageMatchedAutomatically: true,
+                _imageMatchSource: exactCodeMatch ? 'code' : 'name',
+              }
+            : tool;
+        });
+
+        setTools(repairedTools);
+        if (user.role !== 'Operador') setGlobalTools(repairedTools);
+
+        // Persiste o resultado para que os cards permaneçam corrigidos.
+        const repairs = repairedTools.filter((tool: any) => tool._imageMatchedAutomatically);
+        if (repairs.length > 0) {
+          await Promise.all(repairs.map((tool: any) =>
+            supabase.from('tools').update({
+              image_url: tool.image_url,
+              image_urls: tool.image_urls,
+            }).eq('id', tool.id)
+          ));
+        }
       }
 
       // A operação normal do Operador continua limitada à sua filial, mas a busca
