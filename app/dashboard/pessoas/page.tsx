@@ -19,7 +19,7 @@ type Tab = 'colaboradores' | 'clientes' | 'funcionarios_cliente';
 interface Colaborador {
   id: string;
   name: string;
-  registration: string;
+  registration: string | null;
   role: 'Administrador' | 'Operador';
   branch_id: string;
   active: boolean;
@@ -103,10 +103,11 @@ export default function PessoasPage() {
 
   // ─── Toggle active ────────────────────────────────────────────────────────
 
-  const toggleColaborador = async (reg: string, cur: boolean) => {
-    if (reg === currentUser?.registration) return;
-    await supabase.from('users_access').update({ active: !cur }).eq('registration', reg);
-    setColaboradores(prev => prev.map(u => u.registration === reg ? { ...u, active: !cur } : u));
+  const toggleColaborador = async (u: Colaborador) => {
+    if (u.registration && u.registration === currentUser?.registration) return;
+    const { error } = await supabase.from('users_access').update({ active: !u.active }).eq('id', u.id);
+    if (error) { showToast('err', error.message || 'Erro ao atualizar.'); return; }
+    setColaboradores(prev => prev.map(c => c.id === u.id ? { ...c, active: !u.active } : c));
   };
 
   const toggleClient = async (id: string, cur: boolean) => {
@@ -124,14 +125,15 @@ export default function PessoasPage() {
   const saveColaborador = async (data: any) => {
     setSaving(true);
     try {
+      const registration = (data.registration || '').trim();
       if (editItem) {
         const { error } = await supabase.from('users_access').update({
-          name: data.name, role: data.role, branch_id: data.branch_id
-        }).eq('registration', editItem.registration);
+          name: data.name, registration: registration || null, role: data.role, branch_id: data.branch_id
+        }).eq('id', editItem.id);
         if (error) throw error;
       } else {
         const { error } = await supabase.from('users_access').insert({
-          name: data.name, registration: data.registration,
+          name: data.name, registration,
           role: data.role, branch_id: data.branch_id, active: true
         });
         if (error) throw error;
@@ -139,7 +141,7 @@ export default function PessoasPage() {
       showToast('ok', editItem ? 'Colaborador atualizado!' : 'Colaborador cadastrado!');
       setModal(null); setEditItem(null); fetchAll();
     } catch (e: any) {
-      showToast('err', e.message || 'Erro ao salvar.');
+      showToast('err', e?.code === '23505' ? 'Já existe um colaborador com essa matrícula.' : (e.message || 'Erro ao salvar.'));
     } finally { setSaving(false); }
   };
 
@@ -213,7 +215,7 @@ export default function PessoasPage() {
 
   const q = searchTerm.toLowerCase();
   const filteredColaboradores = colaboradores.filter(u =>
-    u.name.toLowerCase().includes(q) || u.registration.includes(q)
+    u.name.toLowerCase().includes(q) || (u.registration || '').includes(q)
   );
   const filteredClients = clients.filter(c =>
     c.name.toLowerCase().includes(q) || (c.document || '').includes(q)
@@ -324,11 +326,11 @@ export default function PessoasPage() {
               <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-6">
                 {filteredColaboradores.length === 0 ? <EmptyState /> : filteredColaboradores.map(u => (
                   <ColaboradorCard
-                    key={u.registration}
+                    key={u.id}
                     u={u}
-                    isSelf={u.registration === currentUser?.registration}
+                    isSelf={!!u.registration && u.registration === currentUser?.registration}
                     branchName={branches.find(b => b.id === u.branch_id)?.name || 'N/A'}
-                    onToggle={() => toggleColaborador(u.registration, u.active)}
+                    onToggle={() => toggleColaborador(u)}
                     onEdit={() => { setEditItem(u); setModal('colaborador'); }}
                   />
                 ))}
@@ -567,11 +569,9 @@ function ColaboradorModal({ edit, branches, saving, onClose, onSave }: any) {
       <Field label="Nome completo">
         <input className={inputCls} value={form.name} onChange={e => set('name', e.target.value)} placeholder="Ex: João da Silva" />
       </Field>
-      {!edit && (
-        <Field label="Matrícula">
-          <input className={inputCls} value={form.registration} onChange={e => set('registration', e.target.value)} placeholder="Ex: #0123" />
-        </Field>
-      )}
+      <Field label="Matrícula">
+        <input className={inputCls} value={form.registration} onChange={e => set('registration', e.target.value)} placeholder="Ex: #0123" />
+      </Field>
       <Field label="Perfil de acesso">
         <div className="relative">
           <select className={selectCls} value={form.role} onChange={e => set('role', e.target.value)}>
@@ -591,7 +591,7 @@ function ColaboradorModal({ edit, branches, saving, onClose, onSave }: any) {
       </Field>
       <button
         onClick={() => onSave(form)}
-        disabled={saving || !form.name || (!edit && !form.registration)}
+        disabled={saving || !form.name || (!edit && !form.registration.trim())}
         className="w-full bg-slate-900 text-white font-black uppercase tracking-widest py-4 rounded-2xl flex items-center justify-center gap-2 text-xs hover:bg-indigo-600 transition-colors disabled:opacity-50 mt-2"
       >
         {saving ? <Loader2 size={16} className="animate-spin" /> : <CheckCircle2 size={16} />}
