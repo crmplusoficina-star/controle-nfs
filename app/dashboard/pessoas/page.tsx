@@ -56,6 +56,7 @@ export default function PessoasPage() {
   const { user: currentUser } = useAuth();
   const [tab, setTab] = useState<Tab>('colaboradores');
   const [searchTerm, setSearchTerm] = useState('');
+  const [branchFilter, setBranchFilter] = useState('');
   const [isLoading, setIsLoading] = useState(true);
 
   // data
@@ -215,7 +216,8 @@ export default function PessoasPage() {
 
   const q = searchTerm.toLowerCase();
   const filteredColaboradores = colaboradores.filter(u =>
-    u.name.toLowerCase().includes(q) || (u.registration || '').includes(q)
+    (u.name.toLowerCase().includes(q) || (u.registration || '').includes(q)) &&
+    (!branchFilter || (branchFilter === 'none' ? !u.branch_id : u.branch_id === branchFilter))
   );
   const filteredClients = clients.filter(c =>
     c.name.toLowerCase().includes(q) || (c.document || '').includes(q)
@@ -281,6 +283,23 @@ export default function PessoasPage() {
             className="w-full pl-11 pr-4 py-3 bg-slate-50 border-none rounded-xl text-xs font-medium focus:ring-2 focus:ring-indigo-500 transition-all"
           />
         </div>
+        {tab === 'colaboradores' && (
+          <div className="relative w-full sm:w-56">
+            <MapPin size={14} className="absolute left-4 top-1/2 -translate-y-1/2 text-slate-400 pointer-events-none" />
+            <select
+              value={branchFilter}
+              onChange={(e) => setBranchFilter(e.target.value)}
+              className="w-full pl-10 pr-10 py-3 bg-slate-50 border-none rounded-xl text-xs font-medium appearance-none cursor-pointer focus:ring-2 focus:ring-indigo-500 transition-all"
+            >
+              <option value="">Todas as filiais</option>
+              {[...branches].sort((a, b) => a.name.localeCompare(b.name)).map(b => (
+                <option key={b.id} value={b.id}>{b.name}</option>
+              ))}
+              <option value="none">Sem filial</option>
+            </select>
+            <ChevronDown size={14} className="absolute right-4 top-1/2 -translate-y-1/2 text-slate-400 pointer-events-none" />
+          </div>
+        )}
         {/* Tabs */}
         <div className="flex items-center gap-1 bg-slate-100 p-1 rounded-2xl">
           {([
